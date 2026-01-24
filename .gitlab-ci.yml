@@ -1,0 +1,49 @@
+stages:
+  - lint
+  - test
+
+variables:
+  # Matching the version from go.mod (1.25.3)
+  GO_VERSION: "1.25"
+
+lint:
+  stage: lint
+  image: golangci/golangci-lint:latest
+  script:
+    - golangci-lint run
+
+test:
+  stage: test
+  image: golang:${GO_VERSION}
+  script:
+    - go mod tidy
+    - make test
+
+test-e2e:
+  stage: test
+  image: golang:${GO_VERSION}
+  services:
+    - name: docker:dind
+      alias: docker
+      command:
+        [
+          "dockerd",
+          "--host=tcp://0.0.0.0:2375",
+          "--host=unix:///var/run/docker.sock",
+          "--tls=false",
+        ]
+
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    # Install Docker CLI (required for kind interaction)
+    - apt-get update && apt-get install -y docker.io
+    # Install kind
+    - curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)"
+    - chmod +x ./kind
+    - mv ./kind /usr/local/bin/kind
+    - kind version
+  script:
+    - go mod tidy
+    - make test-e2e
