@@ -76,6 +76,67 @@ func TestAuth_LoadOrRegister_NewKeypair(t *testing.T) {
 	}
 }
 
+func TestAuth_LoadOrRegister_InvalidSeedLength(t *testing.T) {
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "lockbox-credentials", Namespace: "test-ns"},
+		Data:       map[string][]byte{"seed": []byte("too-short")},
+	}
+	fakeClient := fake.NewClientBuilder().WithObjects(existing).Build()
+
+	a := NewAuth("http://unused", "unused-key")
+	err := a.LoadOrRegister(context.Background(), fakeClient, "test-ns")
+	if err == nil {
+		t.Fatal("expected error for invalid seed length")
+	}
+}
+
+func TestAuth_LoadOrRegister_RegisterFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	fakeClient := fake.NewClientBuilder().Build()
+	a := NewAuth(srv.URL, "wrong-key")
+	err := a.LoadOrRegister(context.Background(), fakeClient, "test-ns")
+	if err == nil {
+		t.Fatal("expected error when register fails")
+	}
+}
+
+func TestAuth_GetToken_ChallengeFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	seed := make([]byte, 32)
+	a := &Auth{endpoint: srv.URL, privKey: ed25519.NewKeyFromSeed(seed), http: &http.Client{}}
+	_, err := a.GetToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error when challenge fails")
+	}
+}
+
+func TestAuth_GetToken_VerifyFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/auth/challenge" {
+			json.NewEncoder(w).Encode(ChallengeResponse{Challenge: make(IntBytes, 32)})
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	seed := make([]byte, 32)
+	a := &Auth{endpoint: srv.URL, privKey: ed25519.NewKeyFromSeed(seed), http: &http.Client{}}
+	_, err := a.GetToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error when verify fails")
+	}
+}
+
 func TestAuth_GetToken(t *testing.T) {
 	_, privKey, _ := ed25519.GenerateKey(rand.Reader)
 	challenge := make([]byte, 32)
