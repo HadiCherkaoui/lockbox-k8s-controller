@@ -32,9 +32,9 @@ func encryptField(t *testing.T, nonce []byte, plaintext []byte) lockbox.Cipherte
 	return lockbox.Ciphertext{Nonce: lockbox.IntBytes(nonce), Data: lockbox.IntBytes(ct)}
 }
 
-func newSecret(ns, name string, managed bool) *corev1.Secret {
+func newSecret(managed bool) *corev1.Secret {
 	s := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "default"},
 		Data:       map[string][]byte{"existing-key": []byte("existing-val")},
 	}
 	if managed {
@@ -68,7 +68,7 @@ func TestReconcile_Create(t *testing.T) {
 }
 
 func TestReconcile_Update(t *testing.T) {
-	existing := newSecret("default", "my-secret", true)
+	existing := newSecret(true)
 	fc := fake.NewClientBuilder().WithObjects(existing).Build()
 
 	nonce := make([]byte, 12)
@@ -92,7 +92,7 @@ func TestReconcile_Update(t *testing.T) {
 }
 
 func TestReconcile_Adopt(t *testing.T) {
-	existing := newSecret("default", "my-secret", false)
+	existing := newSecret(false)
 	fc := fake.NewClientBuilder().WithObjects(existing).Build()
 
 	event := lockbox.SecretWithMetadata{
@@ -117,7 +117,7 @@ func TestReconcile_Adopt(t *testing.T) {
 }
 
 func TestReconcile_Delete_Managed(t *testing.T) {
-	existing := newSecret("default", "my-secret", true)
+	existing := newSecret(true)
 	fc := fake.NewClientBuilder().WithObjects(existing).Build()
 
 	ts := int64(1234)
@@ -138,7 +138,7 @@ func TestReconcile_Delete_Managed(t *testing.T) {
 }
 
 func TestReconcile_Delete_Unmanaged(t *testing.T) {
-	existing := newSecret("default", "my-secret", false)
+	existing := newSecret(false)
 	fc := fake.NewClientBuilder().WithObjects(existing).Build()
 
 	ts := int64(1234)

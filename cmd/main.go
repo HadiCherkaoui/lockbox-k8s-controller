@@ -17,9 +17,13 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -34,6 +38,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	lockboxpkg "gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller/internal/lockbox"
+	lbxsyncer "gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller/internal/sync"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -174,6 +181,42 @@ func main() {
 		os.Exit(1)
 	}
 
+	// --- Lockbox sync setup ---
+	lockboxEndpoint := mustEnv("LOCKBOX_ENDPOINT")
+	lockboxAPIKey := os.Getenv("LOCKBOX_API_KEY")
+
+	syncIntervalStr := os.Getenv("LOCKBOX_SYNC_INTERVAL")
+	if syncIntervalStr == "" {
+		syncIntervalStr = "60s"
+	}
+	syncInterval, err := time.ParseDuration(syncIntervalStr)
+	if err != nil {
+		setupLog.Error(err, "invalid LOCKBOX_SYNC_INTERVAL", "value", syncIntervalStr)
+		os.Exit(1)
+	}
+
+	controllerNS := controllerNamespace()
+
+	lbxAuth := lockboxpkg.NewAuth(lockboxEndpoint, lockboxAPIKey)
+	if err = lbxAuth.LoadOrRegister(context.Background(), mgr.GetClient(), controllerNS); err != nil {
+		setupLog.Error(err, "failed to initialize lockbox auth")
+		os.Exit(1)
+	}
+
+	lbxClient := lockboxpkg.NewClient(lockboxEndpoint, lbxAuth)
+	syncer := &lbxsyncer.Syncer{
+		LockboxClient: lbxClient,
+		K8sClient:     mgr.GetClient(),
+		Seed:          lbxAuth.Seed(),
+		Interval:      syncInterval,
+	}
+	if err = mgr.Add(syncer); err != nil {
+		setupLog.Error(err, "failed to register lockbox syncer")
+		os.Exit(1)
+	}
+	setupLog.Info("lockbox syncer registered", "interval", syncInterval, "namespace", controllerNS)
+	// --- end lockbox sync setup ---
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -190,4 +233,23 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func mustEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		setupLog.Error(fmt.Errorf("required env var not set"), "missing env", "key", key)
+		os.Exit(1)
+	}
+	return v
+}
+
+// controllerNamespace returns the namespace the controller pod is running in.
+// Falls back to lockbox-k8s-controller-system if the downward API file is absent.
+func controllerNamespace() string {
+	ns, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		return "lockbox-k8s-controller-system"
+	}
+	return strings.TrimSpace(string(ns))
 }

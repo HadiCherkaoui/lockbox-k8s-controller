@@ -15,7 +15,10 @@ import (
 	"gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller/internal/lockbox"
 )
 
-const managedAnnotation = "lockbox.io/managed"
+const (
+	managedAnnotation      = "lockbox.io/managed"
+	managedAnnotationValue = "true"
+)
 
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
@@ -43,7 +46,7 @@ func handleDelete(ctx context.Context, log logr.Logger, k8sClient client.Client,
 		}
 		return fmt.Errorf("get secret for delete: %w", err)
 	}
-	if existing.Annotations[managedAnnotation] != "true" {
+	if existing.Annotations[managedAnnotation] != managedAnnotationValue {
 		log.Info("skipping delete of unmanaged secret",
 			"namespace", nsName.Namespace, "name", nsName.Name)
 		return nil
@@ -74,14 +77,14 @@ func handleUpsert(
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        s.Name,
 				Namespace:   s.Namespace,
-				Annotations: map[string]string{managedAnnotation: "true"},
+				Annotations: map[string]string{managedAnnotation: managedAnnotationValue},
 			},
 			Type: corev1.SecretTypeOpaque,
 			Data: data,
 		})
 	}
 
-	if existing.Annotations[managedAnnotation] == "true" {
+	if existing.Annotations[managedAnnotation] == managedAnnotationValue {
 		// UPDATE
 		existing.Data = data
 		return k8sClient.Update(ctx, &existing)
@@ -92,7 +95,7 @@ func handleUpsert(
 	if existing.Annotations == nil {
 		existing.Annotations = map[string]string{}
 	}
-	existing.Annotations[managedAnnotation] = "true"
+	existing.Annotations[managedAnnotation] = managedAnnotationValue
 	return k8sClient.Update(ctx, &existing)
 }
 
