@@ -62,3 +62,24 @@ func TestSecretWithMetadata_Unmarshal(t *testing.T) {
 		t.Fatalf("data field: %+v", s.Data)
 	}
 }
+
+func TestIntBytes_OutOfRange(t *testing.T) {
+	err := json.Unmarshal([]byte("[256]"), new(IntBytes))
+	if err == nil {
+		t.Fatal("expected error for value 256")
+	}
+	err = json.Unmarshal([]byte("[-1]"), new(IntBytes))
+	if err == nil {
+		t.Fatal("expected error for value -1")
+	}
+}
+
+func TestIntBytes_NullJSON(t *testing.T) {
+	var b IntBytes
+	if err := json.Unmarshal([]byte("null"), &b); err != nil {
+		t.Fatalf("unmarshal null: %v", err)
+	}
+	if b != nil {
+		t.Fatalf("expected nil, got %v", b)
+	}
+}

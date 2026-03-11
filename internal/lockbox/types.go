@@ -12,6 +12,9 @@ import (
 type IntBytes []byte
 
 func (b IntBytes) MarshalJSON() ([]byte, error) {
+	if b == nil {
+		return []byte("null"), nil
+	}
 	nums := make([]int, len(b))
 	for i, v := range b {
 		nums[i] = int(v)
@@ -20,6 +23,10 @@ func (b IntBytes) MarshalJSON() ([]byte, error) {
 }
 
 func (b *IntBytes) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*b = nil
+		return nil
+	}
 	var nums []int
 	if err := json.Unmarshal(data, &nums); err != nil {
 		return fmt.Errorf("IntBytes: expected integer array: %w", err)
