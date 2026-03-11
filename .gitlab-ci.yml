@@ -43,6 +43,7 @@ test-e2e:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
+    CERT_MANAGER_INSTALL_SKIP: "true"
   before_script:
     - apt-get update && apt-get install -y docker.io
     - curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)"
