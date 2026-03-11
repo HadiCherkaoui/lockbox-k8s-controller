@@ -46,9 +46,11 @@ test-e2e:
   before_script:
     - apt-get update && apt-get install -y docker.io
     - curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)"
-    - chmod +x ./kind
-    - mv ./kind /usr/local/bin/kind
+    - chmod +x ./kind && mv ./kind /usr/local/bin/kind
     - kind version
+    - curl -Lo ./kubectl "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/$(go env GOARCH)/kubectl"
+    - chmod +x ./kubectl && mv ./kubectl /usr/local/bin/kubectl
+    - kubectl version --client
   script:
     - go mod tidy
     - make test-e2e
