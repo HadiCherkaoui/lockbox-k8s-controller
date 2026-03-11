@@ -1,12 +1,22 @@
+spec:
+  inputs:
+    IMAGE_TAG:
+      description: "Docker image tag to push (e.g. v1.2.3). Defaults to the short commit SHA."
+      default: ""
+      type: string
+
 stages:
   - lint
   - test
+  - build
 
 variables:
   # Matching the version from go.mod (1.25.3)
   GO_VERSION: "1.25"
   SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar" # Defines the location of the analysis task cache
   GIT_DEPTH: "0" # Tells git to fetch all the branches of the project, required by the analysis task
+  # Captures the IMAGE_TAG input; falls back to CI_COMMIT_SHORT_SHA in scripts when empty.
+  CUSTOM_IMAGE_TAG: $[[ inputs.IMAGE_TAG ]]
 
 lint:
   stage: lint
@@ -69,3 +79,24 @@ test-e2e:
   script:
     - go mod tidy
     - make test-e2e
+
+build-image:
+  stage: build
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - TAG="${CUSTOM_IMAGE_TAG:-$CI_COMMIT_SHORT_SHA}"
+    - docker build -t "$CI_REGISTRY_IMAGE:$TAG" -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:$TAG"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'

@@ -66,6 +66,19 @@ spec:
         image: controller:latest
         name: manager
         ports: []
+        env:
+          - name: LOCKBOX_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: lockbox-config
+                key: endpoint
+          - name: LOCKBOX_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: lockbox-config
+                key: api-key
+          - name: LOCKBOX_SYNC_INTERVAL
+            value: "60s"
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
