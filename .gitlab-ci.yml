@@ -1,22 +1,19 @@
 spec:
   inputs:
-    IMAGE_TAG:
-      description: "Docker image tag to push (e.g. v1.2.3). Defaults to the short commit SHA."
-      default: ""
-      type: string
+    image_tag:
+      default: "latest"
+      description: "Docker image tag (e.g. 1.0.0, latest)"
+---
+
+variables:
+  GO_VERSION: "1.25" # Matching the version from go.mod (1.25.3)
+  SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar" # Defines the location of the analysis task cache
+  GIT_DEPTH: "0" # Tells git to fetch all the branches of the project, required by the analysis task
 
 stages:
   - lint
   - test
   - build
-
-variables:
-  # Matching the version from go.mod (1.25.3)
-  GO_VERSION: "1.25"
-  SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar" # Defines the location of the analysis task cache
-  GIT_DEPTH: "0" # Tells git to fetch all the branches of the project, required by the analysis task
-  # Captures the IMAGE_TAG input; falls back to CI_COMMIT_SHORT_SHA in scripts when empty.
-  CUSTOM_IMAGE_TAG: $[[ inputs.IMAGE_TAG ]]
 
 lint:
   stage: lint
@@ -24,6 +21,76 @@ lint:
   script:
     - golangci-lint run
 
+test:
+  stage: test
+  image: golang:${GO_VERSION}
+  script:
+    - go mod tidy
+    - make test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == 'master'
+    - if: $CI_COMMIT_BRANCH == 'main'
+    - if: $CI_COMMIT_BRANCH == 'develop'
+
+test-e2e:
+  stage: test
+  image: golang:${GO_VERSION}
+  services:
+    - name: docker:28.0.4-dind
+      alias: docker
+      command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apt-get update && apt-get install -y docker.io
+    - curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)"
+    - chmod +x ./kind
+    - mv ./kind /usr/local/bin/kind
+    - kind version
+  script:
+    - go mod tidy
+    - make test-e2e
+
+# -------------------------
+# Build and push image
+# -------------------------
+.build_docker_common:
+  image: docker:28.0.4
+  services:
+    - name: docker:28.0.4-dind
+      alias: docker
+      command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_BUILDKIT: "1"
+  before_script:
+    - docker info
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+build:image:
+  stage: build
+  needs: ["test"]
+  extends: .build_docker_common
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE:$[[ inputs.image_tag ]]" .
+    - docker push "$CI_REGISTRY_IMAGE:$[[ inputs.image_tag ]]"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - go.mod
+        - go.sum
+        - cmd/**/*
+        - internal/**/*
+        - Dockerfile
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+# -------------------------
+# Sonar
+# -------------------------
 build-sonar:
   stage: lint
   image:
@@ -43,60 +110,3 @@ build-sonar:
     - if: $CI_COMMIT_BRANCH == 'master'
     - if: $CI_COMMIT_BRANCH == 'main'
     - if: $CI_COMMIT_BRANCH == 'develop'
-
-test:
-  stage: test
-  image: golang:${GO_VERSION}
-  script:
-    - go mod tidy
-    - make test
-
-test-e2e:
-  stage: test
-  image: golang:${GO_VERSION}
-  services:
-    - name: docker:dind
-      alias: docker
-      command:
-        [
-          "dockerd",
-          "--host=tcp://0.0.0.0:2375",
-          "--host=unix:///var/run/docker.sock",
-          "--tls=false",
-        ]
-
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-  before_script:
-    # Install Docker CLI (required for kind interaction)
-    - apt-get update && apt-get install -y docker.io
-    # Install kind
-    - curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)"
-    - chmod +x ./kind
-    - mv ./kind /usr/local/bin/kind
-    - kind version
-  script:
-    - go mod tidy
-    - make test-e2e
-
-build-image:
-  stage: build
-  image: docker:27
-  services:
-    - name: docker:27-dind
-      alias: docker
-  variables:
-    DOCKER_TLS_CERTDIR: "/certs"
-  before_script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-  script:
-    - TAG="${CUSTOM_IMAGE_TAG:-$CI_COMMIT_SHORT_SHA}"
-    - docker build -t "$CI_REGISTRY_IMAGE:$TAG" -t "$CI_REGISTRY_IMAGE:latest" .
-    - docker push "$CI_REGISTRY_IMAGE:$TAG"
-    - docker push "$CI_REGISTRY_IMAGE:latest"
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_COMMIT_BRANCH == "master"'
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-    - if: '$CI_PIPELINE_SOURCE == "api"'
