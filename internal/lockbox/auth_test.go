@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const authChallengePath = "/auth/challenge"
+
 func TestAuth_LoadOrRegister_ExistingSecret(t *testing.T) {
 	_, privKey, _ := ed25519.GenerateKey(rand.Reader)
 	seed := privKey.Seed()
@@ -121,8 +123,8 @@ func TestAuth_GetToken_ChallengeFails(t *testing.T) {
 func TestAuth_GetToken_VerifyFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/auth/challenge" {
-			json.NewEncoder(w).Encode(ChallengeResponse{Challenge: make(IntBytes, 32)})
+		if r.URL.Path == authChallengePath {
+			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: make(IntBytes, 32)})
 			return
 		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -145,7 +147,7 @@ func TestAuth_GetToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/auth/challenge":
+		case authChallengePath:
 			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: IntBytes(challenge)})
 		case "/auth/verify":
 			var req AuthRequest
