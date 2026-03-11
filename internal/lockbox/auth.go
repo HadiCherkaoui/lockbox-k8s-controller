@@ -115,7 +115,7 @@ func (a *Auth) GetToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("verify request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("verify: status %d: %s", resp.StatusCode, b)
@@ -144,7 +144,7 @@ func (a *Auth) getChallenge(ctx context.Context, pubKey ed25519.PublicKey) (*Cha
 	if err != nil {
 		return nil, fmt.Errorf("challenge request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("challenge: status %d: %s", resp.StatusCode, b)
@@ -174,7 +174,7 @@ func (a *Auth) register(ctx context.Context, pubKey ed25519.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("register request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("register: status %d: %s", resp.StatusCode, b)

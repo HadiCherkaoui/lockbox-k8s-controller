@@ -45,7 +45,7 @@ func TestAuth_LoadOrRegister_NewKeypair(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"success": true})
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 			return
 		}
 		http.NotFound(w, r)
@@ -79,22 +79,22 @@ func TestAuth_LoadOrRegister_NewKeypair(t *testing.T) {
 func TestAuth_GetToken(t *testing.T) {
 	_, privKey, _ := ed25519.GenerateKey(rand.Reader)
 	challenge := make([]byte, 32)
-	rand.Read(challenge)
+	_, _ = rand.Read(challenge)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/auth/challenge":
-			json.NewEncoder(w).Encode(ChallengeResponse{Challenge: IntBytes(challenge)})
+			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: IntBytes(challenge)})
 		case "/auth/verify":
 			var req AuthRequest
-			json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewDecoder(r.Body).Decode(&req)
 			pubKey := ed25519.PublicKey(req.PublicKey)
 			if !ed25519.Verify(pubKey, req.Challenge, req.Signature) {
 				http.Error(w, "bad sig", http.StatusUnauthorized)
 				return
 			}
-			json.NewEncoder(w).Encode(AuthResponse{Success: true, Token: "test-jwt"})
+			_ = json.NewEncoder(w).Encode(AuthResponse{Success: true, Token: "test-jwt"})
 		default:
 			http.NotFound(w, r)
 		}
