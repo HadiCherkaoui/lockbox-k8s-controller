@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller/internal/lockbox"
@@ -87,5 +88,71 @@ func TestSyncer_ErrorDoesNotPanic(t *testing.T) {
 	// Should not panic even when DeltaSync returns an error
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+}
+
+type mockAuth struct {
+	loadCalled bool
+	seed       []byte
+}
+
+func (m *mockAuth) LoadOrRegister(_ context.Context, _ client.Client, _ string) error {
+	m.loadCalled = true
+	m.seed = make([]byte, 32)
+	return nil
+}
+
+func (m *mockAuth) Seed() []byte {
+	return m.seed
+}
+
+type mockAuthFailing struct{}
+
+func (m *mockAuthFailing) LoadOrRegister(_ context.Context, _ client.Client, _ string) error {
+	return fmt.Errorf("auth init failed")
+}
+
+func (m *mockAuthFailing) Seed() []byte { return nil }
+
+func TestSyncer_AuthInitialized_InStart(t *testing.T) {
+	mc := &mockLockboxClient{serverTime: 1}
+	fc := fake.NewClientBuilder().Build()
+	ma := &mockAuth{}
+
+	s := &Syncer{
+		LockboxClient: mc,
+		K8sClient:     fc,
+		Auth:          ma,
+		Namespace:     "test-ns",
+		Interval:      time.Hour,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !ma.loadCalled {
+		t.Fatal("expected LoadOrRegister to be called")
+	}
+	if len(s.Seed) != 32 {
+		t.Fatalf("expected seed to be set, got len=%d", len(s.Seed))
+	}
+}
+
+func TestSyncer_AuthInitFails(t *testing.T) {
+	fc := fake.NewClientBuilder().Build()
+	ma := &mockAuthFailing{}
+
+	s := &Syncer{
+		LockboxClient: &mockLockboxClient{},
+		K8sClient:     fc,
+		Auth:          ma,
+		Namespace:     "test-ns",
+		Interval:      time.Hour,
+	}
+	err := s.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error when auth init fails")
 	}
 }

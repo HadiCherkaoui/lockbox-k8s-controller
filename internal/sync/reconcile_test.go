@@ -157,3 +157,20 @@ func TestReconcile_Delete_Unmanaged(t *testing.T) {
 		t.Fatal("unmanaged secret was deleted — must not happen")
 	}
 }
+
+func TestReconcile_Delete_NotFound(t *testing.T) {
+	// Secret doesn't exist — delete event should be a no-op
+	fc := fake.NewClientBuilder().Build()
+
+	ts := int64(1234)
+	event := lockbox.SecretWithMetadata{
+		Namespace: "default",
+		Name:      "nonexistent",
+		DeletedAt: &ts,
+	}
+	logger := zap.New().WithName("test")
+	if err := reconcileSecret(context.Background(), logger, fc, testSeed, event); err != nil {
+		t.Fatalf("reconcileSecret: %v", err)
+	}
+	// No panic, no error — success
+}
