@@ -3,6 +3,7 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -17,18 +18,36 @@ type LockboxClientIface interface {
 	DeltaSync(ctx context.Context, since int64) ([]lockbox.SecretWithMetadata, int64, error)
 }
 
+// AuthIface is the subset of lockbox.Auth used by Syncer for initialization.
+type AuthIface interface {
+	LoadOrRegister(ctx context.Context, k8sClient client.Client, namespace string) error
+	Seed() []byte
+}
+
 // Syncer polls Lockbox and syncs secrets to Kubernetes. Implements manager.Runnable.
 type Syncer struct {
 	LockboxClient LockboxClientIface
 	K8sClient     client.Client
 	Seed          []byte
 	Interval      time.Duration
-	lastSync      int64
+	// Auth and Namespace are used to initialize the keypair on first start.
+	// If Auth is nil, Seed must be pre-populated.
+	Auth      AuthIface
+	Namespace string
+	lastSync  int64
 }
 
 // Start implements manager.Runnable. Blocks until ctx is cancelled.
 func (s *Syncer) Start(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("lockbox-syncer")
+
+	if s.Auth != nil {
+		if err := s.Auth.LoadOrRegister(ctx, s.K8sClient, s.Namespace); err != nil {
+			return fmt.Errorf("initialize lockbox auth: %w", err)
+		}
+		s.Seed = s.Auth.Seed()
+		logger.Info("lockbox auth initialized", "namespace", s.Namespace)
+	}
 
 	s.syncOnce(ctx, logger)
 

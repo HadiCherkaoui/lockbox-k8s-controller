@@ -17,7 +17,6 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -198,16 +197,12 @@ func main() {
 	controllerNS := controllerNamespace()
 
 	lbxAuth := lockboxpkg.NewAuth(lockboxEndpoint, lockboxAPIKey)
-	if err = lbxAuth.LoadOrRegister(context.Background(), mgr.GetClient(), controllerNS); err != nil {
-		setupLog.Error(err, "failed to initialize lockbox auth")
-		os.Exit(1)
-	}
-
 	lbxClient := lockboxpkg.NewClient(lockboxEndpoint, lbxAuth)
 	syncer := &lbxsyncer.Syncer{
 		LockboxClient: lbxClient,
 		K8sClient:     mgr.GetClient(),
-		Seed:          lbxAuth.Seed(),
+		Auth:          lbxAuth,
+		Namespace:     controllerNS,
 		Interval:      syncInterval,
 	}
 	if err = mgr.Add(syncer); err != nil {
