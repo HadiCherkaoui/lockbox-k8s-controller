@@ -71,6 +71,14 @@ func handleUpsert(
 	s lockbox.SecretWithMetadata,
 	nsName types.NamespacedName,
 ) error {
+	// Validate secret_type before any I/O. The server must always send a
+	// non-empty value; an empty string is a protocol error, not a default.
+	// Returning an error here causes the syncer to log at Error level and
+	// hold the cursor for a retry, which keeps the failure visible.
+	if s.SecretType == "" {
+		return fmt.Errorf("secret_type is empty for %s/%s: server-side protocol error — expected a non-empty type (e.g. \"Opaque\")", s.Namespace, s.Name)
+	}
+
 	data, err := decryptAll(seed, s.Data)
 	if err != nil {
 		return fmt.Errorf("decrypt %s/%s: %w", s.Namespace, s.Name, err)
@@ -81,7 +89,10 @@ func handleUpsert(
 		if !errors.IsNotFound(err) {
 			return fmt.Errorf("get secret: %w", err)
 		}
-		// CREATE
+		// CREATE. Use the type the server sent directly — the server defaults
+		// to "Opaque" for ordinary secrets. k8s Secret type is immutable; we
+		// only set it on creation and leave pre-existing Secrets' types
+		// untouched (UPDATE path below).
 		return k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        s.Name,
@@ -89,7 +100,7 @@ func handleUpsert(
 				Annotations: map[string]string{managedAnnotation: managedAnnotationValue},
 				Labels:      map[string]string{managedLabel: managedLabelValue},
 			},
-			Type: corev1.SecretTypeOpaque,
+			Type: corev1.SecretType(s.SecretType),
 			Data: data,
 		})
 	}

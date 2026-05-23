@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -164,7 +166,7 @@ func TestSyncer_TransientFailure_ClearedOnSuccess(t *testing.T) {
 		},
 	}
 	good := lockbox.SecretWithMetadata{
-		Namespace: testNamespace, Name: "x", UpdatedAt: 1,
+		Namespace: testNamespace, Name: "x", UpdatedAt: 1, SecretType: "Opaque",
 		Data: map[string]lockbox.Ciphertext{},
 	}
 	s.LockboxClient = &mockLockboxClient{serverTime: 7, secrets: []lockbox.SecretWithMetadata{good}}
@@ -240,5 +242,100 @@ func TestSyncer_AuthInitFails(t *testing.T) {
 	err := s.Start(context.Background())
 	if err == nil {
 		t.Fatal("expected error when auth init fails")
+	}
+}
+
+// TestSyncer_SelfHeal_RecreatesMissingSecret verifies that a managed Secret
+// that is externally deleted (Flux prune, kubectl delete, etc.) gets recreated
+// by the next syncOnce call — without a controller restart.
+func TestSyncer_SelfHeal_RecreatesMissingSecret(t *testing.T) {
+	// Seed an event with a valid (all-zero) ciphertext.
+	nonce := make([]byte, 12)
+	event := newSyncEvent(t, testNamespace, "heal-me", nonce, "secretval")
+
+	// First tick: reconcile from the delta (creates the secret and populates the cache).
+	mc := &mockLockboxClient{serverTime: 10, secrets: []lockbox.SecretWithMetadata{event}}
+	fc := fake.NewClientBuilder().Build()
+	s := &Syncer{
+		LockboxClient: mc,
+		K8sClient:     fc,
+		Seed:          make([]byte, 32),
+		Interval:      time.Hour,
+	}
+	s.syncOnce(t.Context(), zap.New().WithName("test"))
+
+	// Verify the secret was created.
+	var created corev1.Secret
+	if err := fc.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "heal-me"}, &created); err != nil {
+		t.Fatalf("secret not created after first tick: %v", err)
+	}
+
+	// Simulate external deletion.
+	if err := fc.Delete(t.Context(), &created); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// Second tick: delta is empty (cursor advanced), but self-heal must recreate.
+	mc.secrets = nil
+	mc.serverTime = 20
+	s.syncOnce(t.Context(), zap.New().WithName("test"))
+
+	var healed corev1.Secret
+	if err := fc.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "heal-me"}, &healed); err != nil {
+		t.Fatalf("self-heal: secret not recreated after deletion: %v", err)
+	}
+	if healed.Annotations[managedAnnotation] != managedAnnotationValue {
+		t.Fatal("self-heal: recreated secret is missing managed annotation")
+	}
+}
+
+// TestSyncer_SelfHeal_DoesNotRecreateDeletedUpstream verifies that a secret
+// that was explicitly deleted upstream (DeletedAt != nil) is NOT recreated by
+// the self-heal path — it should be evicted from the cache.
+func TestSyncer_SelfHeal_DoesNotRecreateDeletedUpstream(t *testing.T) {
+	nonce := make([]byte, 12)
+	event := newSyncEvent(t, testNamespace, "going-away", nonce, "value")
+
+	mc := &mockLockboxClient{serverTime: 10, secrets: []lockbox.SecretWithMetadata{event}}
+	fc := fake.NewClientBuilder().Build()
+	s := &Syncer{
+		LockboxClient: mc,
+		K8sClient:     fc,
+		Seed:          make([]byte, 32),
+		Interval:      time.Hour,
+	}
+	// First tick: create + populate cache.
+	s.syncOnce(t.Context(), zap.New().WithName("test"))
+
+	// Second tick: send a delete event. This deletes the k8s Secret AND evicts
+	// the cache entry, so the self-heal loop must not try to recreate it.
+	ts := int64(99)
+	del := lockbox.SecretWithMetadata{
+		Namespace: testNamespace,
+		Name:      "going-away",
+		DeletedAt: &ts,
+	}
+	mc.secrets = []lockbox.SecretWithMetadata{del}
+	mc.serverTime = 20
+	s.syncOnce(t.Context(), zap.New().WithName("test"))
+
+	// The secret must not exist.
+	var got corev1.Secret
+	if err := fc.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "going-away"}, &got); err == nil {
+		t.Fatal("upstream-deleted secret must not be recreated by self-heal")
+	}
+}
+
+// newSyncEvent is a test helper that builds a SecretWithMetadata with a single
+// encrypted field using the all-zero testSeed. encryptField is defined in
+// reconcile_test.go and is available throughout the sync package test binary.
+func newSyncEvent(t *testing.T, ns, name string, nonce []byte, plaintext string) lockbox.SecretWithMetadata {
+	t.Helper()
+	return lockbox.SecretWithMetadata{
+		Namespace:  ns,
+		Name:       name,
+		SecretType: "Opaque",
+		UpdatedAt:  1,
+		Data:       map[string]lockbox.Ciphertext{"val": encryptField(t, nonce, []byte(plaintext))},
 	}
 }

@@ -52,9 +52,10 @@ func TestReconcile_Create(t *testing.T) {
 	fc := fake.NewClientBuilder().Build()
 	nonce := make([]byte, 12)
 	event := lockbox.SecretWithMetadata{
-		Namespace: testNamespace,
-		Name:      testSecretName,
-		Data:      map[string]lockbox.Ciphertext{"password": encryptField(t, nonce, []byte("hunter2"))},
+		Namespace:  testNamespace,
+		Name:       testSecretName,
+		SecretType: "Opaque",
+		Data:       map[string]lockbox.Ciphertext{"password": encryptField(t, nonce, []byte("hunter2"))},
 	}
 	logger := zap.New().WithName("test")
 	if err := reconcileSecret(context.Background(), logger, fc, testSeed, event); err != nil {
@@ -73,6 +74,9 @@ func TestReconcile_Create(t *testing.T) {
 	if string(got.Data["password"]) != "hunter2" {
 		t.Fatalf("data mismatch: %q", got.Data["password"])
 	}
+	if got.Type != corev1.SecretTypeOpaque {
+		t.Fatalf("expected Opaque type, got %q", got.Type)
+	}
 }
 
 func TestReconcile_Update(t *testing.T) {
@@ -82,9 +86,10 @@ func TestReconcile_Update(t *testing.T) {
 	nonce := make([]byte, 12)
 	nonce[0] = 1
 	event := lockbox.SecretWithMetadata{
-		Namespace: testNamespace,
-		Name:      testSecretName,
-		Data:      map[string]lockbox.Ciphertext{"password": encryptField(t, nonce, []byte("new-pass"))},
+		Namespace:  testNamespace,
+		Name:       testSecretName,
+		SecretType: "Opaque",
+		Data:       map[string]lockbox.Ciphertext{"password": encryptField(t, nonce, []byte("new-pass"))},
 	}
 	logger := zap.New().WithName("test")
 	if err := reconcileSecret(context.Background(), logger, fc, testSeed, event); err != nil {
@@ -104,9 +109,10 @@ func TestReconcile_Adopt(t *testing.T) {
 	fc := fake.NewClientBuilder().WithObjects(existing).Build()
 
 	event := lockbox.SecretWithMetadata{
-		Namespace: testNamespace,
-		Name:      testSecretName,
-		Data:      map[string]lockbox.Ciphertext{},
+		Namespace:  testNamespace,
+		Name:       testSecretName,
+		SecretType: "Opaque",
+		Data:       map[string]lockbox.Ciphertext{},
 	}
 	logger := zap.New().WithName("test")
 	if err := reconcileSecret(context.Background(), logger, fc, testSeed, event); err != nil {
@@ -184,4 +190,79 @@ func TestReconcile_Delete_NotFound(t *testing.T) {
 		t.Fatalf("reconcileSecret: %v", err)
 	}
 	// No panic, no error — success
+}
+
+func TestReconcile_Create_OpaqueType(t *testing.T) {
+	// server_type="Opaque" is the common case — must create a Opaque Secret.
+	fc := fake.NewClientBuilder().Build()
+	nonce := make([]byte, 12)
+	nonce[0] = 5
+	event := lockbox.SecretWithMetadata{
+		Namespace:  testNamespace,
+		Name:       "opaque-secret",
+		SecretType: "Opaque",
+		Data: map[string]lockbox.Ciphertext{
+			"key": encryptField(t, nonce, []byte("value")),
+		},
+	}
+	logger := zap.New().WithName("test")
+	if err := reconcileSecret(context.Background(), logger, fc, testSeed, event); err != nil {
+		t.Fatalf("reconcileSecret: %v", err)
+	}
+	var got corev1.Secret
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "opaque-secret"}, &got); err != nil {
+		t.Fatalf("secret not created: %v", err)
+	}
+	if got.Type != corev1.SecretTypeOpaque {
+		t.Fatalf("expected Opaque type, got %q", got.Type)
+	}
+}
+
+func TestReconcile_Create_WithNonOpaqueSecretType(t *testing.T) {
+	// When the server sends a non-Opaque secret_type, the created k8s Secret
+	// must use exactly that type.
+	fc := fake.NewClientBuilder().Build()
+	nonce := make([]byte, 12)
+	event := lockbox.SecretWithMetadata{
+		Namespace:  testNamespace,
+		Name:       "typed-secret",
+		SecretType: "kubernetes.io/dockerconfigjson",
+		Data: map[string]lockbox.Ciphertext{
+			".dockerconfigjson": encryptField(t, nonce, []byte(`{"auths":{}}`)),
+		},
+	}
+	logger := zap.New().WithName("test")
+	if err := reconcileSecret(context.Background(), logger, fc, testSeed, event); err != nil {
+		t.Fatalf("reconcileSecret: %v", err)
+	}
+	var got corev1.Secret
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "typed-secret"}, &got); err != nil {
+		t.Fatalf("secret not created: %v", err)
+	}
+	if got.Type != "kubernetes.io/dockerconfigjson" {
+		t.Fatalf("expected dockerconfigjson type, got %q", got.Type)
+	}
+}
+
+func TestReconcile_EmptySecretType_IsProtocolError(t *testing.T) {
+	// An empty secret_type must be treated as a protocol error: reconcileSecret
+	// must return a non-nil error so the syncer logs at Error level and holds
+	// the cursor, making the server-side bug visible.
+	fc := fake.NewClientBuilder().Build()
+	event := lockbox.SecretWithMetadata{
+		Namespace:  testNamespace,
+		Name:       "bad-secret",
+		SecretType: "", // empty — malformed server response
+		Data:       map[string]lockbox.Ciphertext{},
+	}
+	logger := zap.New().WithName("test")
+	err := reconcileSecret(context.Background(), logger, fc, testSeed, event)
+	if err == nil {
+		t.Fatal("expected error for empty secret_type, got nil")
+	}
+	// Confirm no Secret was created.
+	var got corev1.Secret
+	if getErr := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "bad-secret"}, &got); getErr == nil {
+		t.Fatal("secret must not be created when secret_type is empty")
+	}
 }

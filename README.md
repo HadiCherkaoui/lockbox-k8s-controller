@@ -12,10 +12,16 @@ delta of secret changes since its last cursor, and decrypts each event with
 AES-256-GCM (key derived from the Ed25519 seed). For every event it reconciles
 the matching Kubernetes Secret in the namespace dictated by Lockbox:
 
-- **CREATE** — Secret didn't exist; create it with `lockbox.io/managed=true`.
-- **UPDATE** — Secret already managed; rewrite its `data`.
+- **CREATE** — Secret didn't exist; create it with `lockbox.io/managed=true` and
+  the `secret_type` the server sent (e.g. `Opaque`, `kubernetes.io/dockerconfigjson`).
+- **UPDATE** — Secret already managed; rewrite its `data`. The k8s Secret type is
+  immutable, so the type field is only set on creation and left untouched on updates.
 - **ADOPT** — Secret pre-existed and was unmanaged; mark it managed, leave data untouched.
 - **DELETE** — Secret managed and removed upstream; delete it.
+- **SELF-HEAL** — If a managed Secret is externally deleted (Flux prune, `kubectl delete`,
+  etc.) the controller detects the gap on the next poll tick and recreates the Secret
+  from its in-memory cache, without a restart. Recovery time is at most one
+  `syncInterval` (default 60s).
 
 The keypair is generated on first start, registered with Lockbox using a
 bootstrap API key, and persisted in the `lockbox-credentials` Secret in the
@@ -25,6 +31,21 @@ The controller is implemented as a `manager.Runnable` under
 [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) and
 ships no CRDs — Secret reconciliation is driven entirely by the upstream
 Lockbox delta stream.
+
+### Self-heal behavior
+
+Every sync tick the controller maintains an in-memory cache of the last
+successfully reconciled state for each managed Secret. After processing the
+Lockbox delta, it lists all `app.kubernetes.io/managed-by=lockbox-k8s-controller`
+Secrets and recreates any that are missing. Secrets deleted upstream (Lockbox
+`DELETE` event) are evicted from the cache and are not recreated.
+
+This design (periodic full-state check, Option B) was chosen over a Watch-based
+approach (Option A) because the controller ships no CRDs and runs as a
+`manager.Runnable` rather than a controller-runtime `Reconciler`. A Watch would
+require wiring a separate controller and a point-query Lockbox API that does not
+exist. The periodic approach is equally robust for the homelab scale (≤20 secrets,
+60s interval) and adds no external dependencies.
 
 ## Installation
 

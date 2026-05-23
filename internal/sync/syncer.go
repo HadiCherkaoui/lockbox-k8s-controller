@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -48,6 +49,21 @@ type Syncer struct {
 	// reaching maxReconcileAttempts skips the event so a single corrupt event
 	// can't freeze the cursor indefinitely.
 	failedAttempts map[string]int
+	// knownSecrets is the self-heal cache: maps "namespace/name" to the last
+	// successfully reconciled SecretWithMetadata for every live (non-deleted)
+	// lockbox secret. On each tick, after the delta is processed, healDeletedSecrets
+	// lists all managed k8s Secrets and recreates any that are absent from the
+	// cluster but present here.
+	//
+	// Design choice — Option B (periodic full-state sync):
+	// The controller ships no CRDs and runs as a manager.Runnable, not a
+	// controller-runtime Reconciler. Registering a Watch on core/v1.Secret
+	// (Option A) would require a separate controller wired into cmd/main.go
+	// and a point-query lockbox API that does not exist yet. Option B is
+	// simpler: one extra List call per tick (cheap for <=20 secrets) and
+	// guarantees self-heal within at most one syncInterval regardless of the
+	// deletion mechanism (Flux prune, kubectl delete, etc.).
+	knownSecrets map[string]lockbox.SecretWithMetadata
 }
 
 // Start implements manager.Runnable. Blocks until ctx is cancelled.
@@ -85,6 +101,9 @@ func (s *Syncer) syncOnce(ctx context.Context, logger logr.Logger) {
 	if s.failedAttempts == nil {
 		s.failedAttempts = map[string]int{}
 	}
+	if s.knownSecrets == nil {
+		s.knownSecrets = map[string]lockbox.SecretWithMetadata{}
+	}
 	failed, skipped := 0, 0
 	for _, secret := range secrets {
 		key := fmt.Sprintf("%s/%s@%d", secret.Namespace, secret.Name, secret.UpdatedAt)
@@ -107,6 +126,13 @@ func (s *Syncer) syncOnce(ctx context.Context, logger logr.Logger) {
 			continue
 		}
 		delete(s.failedAttempts, key)
+		// Update the self-heal cache: track live secrets, evict deleted ones.
+		cacheKey := secret.Namespace + "/" + secret.Name
+		if secret.DeletedAt != nil {
+			delete(s.knownSecrets, cacheKey)
+		} else {
+			s.knownSecrets[cacheKey] = secret
+		}
 	}
 	// Advance the cursor only when every remaining event reconciled. Events
 	// that hit maxReconcileAttempts are treated as resolved (skipped), so a
@@ -117,5 +143,52 @@ func (s *Syncer) syncOnce(ctx context.Context, logger logr.Logger) {
 	} else {
 		logger.Info("sync partial — cursor held for retry",
 			"count", len(secrets), "failed", failed, "skipped", skipped, "since", s.lastSync)
+	}
+
+	// Self-heal: recreate any managed Secrets that were externally deleted.
+	// This runs even on a partial sync so a single corrupt event doesn't also
+	// block self-healing of unrelated Secrets.
+	s.healDeletedSecrets(ctx, logger)
+}
+
+// healDeletedSecrets lists all managed k8s Secrets and recreates any that are
+// absent from the cluster but still present in knownSecrets. This catches
+// deletions by Flux prune, kubectl delete, or any other external actor.
+func (s *Syncer) healDeletedSecrets(ctx context.Context, logger logr.Logger) {
+	if len(s.knownSecrets) == 0 {
+		return
+	}
+
+	var secretList corev1.SecretList
+	if err := s.K8sClient.List(ctx, &secretList, client.MatchingLabels{
+		managedLabel: managedLabelValue,
+	}); err != nil {
+		logger.Error(err, "self-heal: failed to list managed secrets")
+		return
+	}
+
+	// Build a set of live secrets.
+	live := make(map[string]struct{}, len(secretList.Items))
+	for i := range secretList.Items {
+		live[secretList.Items[i].Namespace+"/"+secretList.Items[i].Name] = struct{}{}
+	}
+
+	healed := 0
+	for cacheKey, meta := range s.knownSecrets {
+		if _, exists := live[cacheKey]; exists {
+			continue
+		}
+		// Secret is missing from the cluster — recreate it.
+		logger.Info("self-heal: recreating externally-deleted managed secret",
+			"namespace", meta.Namespace, "name", meta.Name)
+		if err := reconcileSecret(ctx, logger, s.K8sClient, s.Seed, meta); err != nil {
+			logger.Error(err, "self-heal: failed to recreate secret",
+				"namespace", meta.Namespace, "name", meta.Name)
+			continue
+		}
+		healed++
+	}
+	if healed > 0 {
+		logger.Info("self-heal: recreated missing managed secrets", "count", healed)
 	}
 }

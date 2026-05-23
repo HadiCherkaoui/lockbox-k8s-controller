@@ -55,6 +55,13 @@ type SecretWithMetadata struct {
 	CreatedAt int64                 `json:"created_at"`
 	UpdatedAt int64                 `json:"updated_at"`
 	DeletedAt *int64                `json:"deleted_at"`
+	// SecretType is the Kubernetes Secret type (e.g. "Opaque",
+	// "kubernetes.io/dockerconfigjson"). The server MUST always send a non-empty
+	// value; "Opaque" is the server-side default for ordinary secrets. The
+	// controller treats an empty or absent value as a protocol error and skips
+	// the event, logging at Error level, so any server-side bug is immediately
+	// visible rather than silently masked by a client-side default.
+	SecretType string `json:"secret_type"`
 }
 
 // DeltaSyncResponse is the response from GET /secrets/sync.

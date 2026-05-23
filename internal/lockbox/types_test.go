@@ -83,3 +83,43 @@ func TestIntBytes_NullJSON(t *testing.T) {
 		t.Fatalf("expected nil, got %v", b)
 	}
 }
+
+func TestSecretWithMetadata_SecretType_Opaque(t *testing.T) {
+	// The common case: server sends "Opaque" as the secret_type.
+	raw := `{
+		"namespace": "prod",
+		"name": "db-pass",
+		"data": {},
+		"created_at": 1,
+		"updated_at": 2,
+		"deleted_at": null,
+		"secret_type": "Opaque"
+	}`
+	var s SecretWithMetadata
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.SecretType != "Opaque" {
+		t.Fatalf("expected Opaque, got %q", s.SecretType)
+	}
+}
+
+func TestSecretWithMetadata_SecretType_NonOpaque(t *testing.T) {
+	// Non-standard type must pass through unchanged.
+	raw := `{
+		"namespace": "prod",
+		"name": "reg",
+		"data": {},
+		"created_at": 1,
+		"updated_at": 2,
+		"deleted_at": null,
+		"secret_type": "kubernetes.io/dockerconfigjson"
+	}`
+	var s SecretWithMetadata
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.SecretType != "kubernetes.io/dockerconfigjson" {
+		t.Fatalf("expected dockerconfigjson, got %q", s.SecretType)
+	}
+}
