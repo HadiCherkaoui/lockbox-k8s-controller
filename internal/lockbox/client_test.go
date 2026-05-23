@@ -137,6 +137,24 @@ func TestClient_DeltaSync_Paginates(t *testing.T) {
 	}
 }
 
+// refreshSyncPage answers /secrets/sync for the JWT-refresh test: 401 on the
+// first call (forcing the client to re-auth), then a normal page on retry
+// — provided the Authorization header carries the post-refresh token.
+func refreshSyncPage(w http.ResponseWriter, r *http.Request, callNum int) {
+	if callNum == 1 {
+		http.Error(w, "expired", http.StatusUnauthorized)
+		return
+	}
+	if got := r.Header.Get("Authorization"); got != "Bearer new-token" {
+		http.Error(w, "wrong token: "+got, http.StatusForbidden)
+		return
+	}
+	writeJSON(w, DeltaSyncResponse{
+		Secrets:    []SecretWithMetadata{{Namespace: "ns", Name: "s1"}},
+		ServerTime: 10,
+	})
+}
+
 func TestClient_DeltaSync_RefreshesOn401(t *testing.T) {
 	// First /secrets/sync request gets a 401 (simulating a JWT that expired
 	// mid-pagination); after a fresh token is fetched the retry succeeds.
@@ -145,35 +163,20 @@ func TestClient_DeltaSync_RefreshesOn401(t *testing.T) {
 	syncCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setJSONHeader(w)
-		// Inline auth mock — handleAuthMock takes a static token; this test
-		// needs a fresh one per /auth/verify so the retry actually carries
-		// a different Bearer.
-		if r.URL.Path == authChallengePath {
+		switch r.URL.Path {
+		case authChallengePath:
 			writeJSON(w, ChallengeResponse{Challenge: make(IntBytes, 32)})
-			return
-		}
-		if r.URL.Path == authVerifyPath {
+		case authVerifyPath:
+			// Fresh token per verify call so the retry actually carries a
+			// different Bearer than the original.
 			writeJSON(w, AuthResponse{Success: true, Token: tokens[tokenIdx]})
 			tokenIdx++
-			return
-		}
-		if r.URL.Path == secretsSyncPath {
+		case secretsSyncPath:
 			syncCalls++
-			if syncCalls == 1 {
-				http.Error(w, "expired", http.StatusUnauthorized)
-				return
-			}
-			if got := r.Header.Get("Authorization"); got != "Bearer new-token" {
-				http.Error(w, "wrong token: "+got, http.StatusForbidden)
-				return
-			}
-			writeJSON(w, DeltaSyncResponse{
-				Secrets:    []SecretWithMetadata{{Namespace: "ns", Name: "s1"}},
-				ServerTime: 10,
-			})
-			return
+			refreshSyncPage(w, r, syncCalls)
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 

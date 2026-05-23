@@ -13,6 +13,7 @@ variables:
 stages:
   - lint
   - test
+  - quality
   - build
   - publish
 
@@ -30,6 +31,13 @@ test:
   script:
     - go mod tidy
     - make test
+  # cover.out is the file `make test` writes (`-coverprofile cover.out`);
+  # SonarQube picks it up via sonar.go.coverage.reportPaths.
+  artifacts:
+    when: always
+    expire_in: 1 hour
+    paths:
+      - cover.out
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_COMMIT_BRANCH == 'master'
@@ -98,7 +106,13 @@ helm-publish:
 # Sonar
 # -------------------------
 build-sonar:
-  stage: lint
+  # Runs in a dedicated stage AFTER `test` so it can consume cover.out via
+  # the test job's artifact. Was in `lint` before; that ran before test and
+  # the scanner saw 0% coverage on new code, tripping the quality gate.
+  stage: quality
+  needs:
+    - job: test
+      artifacts: true
   image:
     name: sonarsource/sonar-scanner-cli:11
     entrypoint: [""]
