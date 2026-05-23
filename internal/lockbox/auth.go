@@ -21,6 +21,10 @@ import (
 
 const (
 	credentialsSecretName = "lockbox-credentials"
+	// credentialsSeedKey is the Secret data key storing the raw 32-byte
+	// Ed25519 seed — same name on read (LoadOrRegister) and write (the
+	// initial registration path).
+	credentialsSeedKey = "seed"
 	// httpTimeout caps every Lockbox HTTP call. A hung endpoint must not stall
 	// the polling syncer (which would block leader-election lease renewal).
 	httpTimeout = 30 * time.Second
@@ -54,7 +58,7 @@ func (a *Auth) LoadOrRegister(ctx context.Context, k8sClient client.Client, name
 	var secret corev1.Secret
 	err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: credentialsSecretName}, &secret)
 	if err == nil {
-		seed := secret.Data["seed"]
+		seed := secret.Data[credentialsSeedKey]
 		if len(seed) != 32 {
 			return fmt.Errorf("invalid seed length in %s/%s: %d", namespace, credentialsSecretName, len(seed))
 		}
@@ -82,7 +86,7 @@ func (a *Auth) LoadOrRegister(ctx context.Context, k8sClient client.Client, name
 			Namespace: namespace,
 		},
 		Data: map[string][]byte{
-			"seed": privKey.Seed(),
+			credentialsSeedKey: privKey.Seed(),
 		},
 	}
 	if err := k8sClient.Create(ctx, cred); err != nil {

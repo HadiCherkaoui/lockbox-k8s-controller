@@ -60,6 +60,14 @@ spec:
             - --metrics-secure={{ .Values.metrics.secure }}
             {{- end }}
           env:
+            # Downward API: the controller stores its keypair Secret in this
+            # namespace. Reading from the env (instead of only the SA token
+            # file) keeps things working on clusters with
+            # `automountServiceAccountToken: false`.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: LOCKBOX_ENDPOINT
               valueFrom:
                 secretKeyRef:

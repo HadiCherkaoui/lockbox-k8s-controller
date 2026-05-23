@@ -43,7 +43,7 @@ helm install lockbox \
 ```
 
 For SOPS / sealed-secrets workflows, point the chart at a bring-your-own Secret
-carrying `endpoint` and optional `api-key` keys:
+carrying `endpoint` (string) and optional `api-key` (string) keys:
 
 ```sh
 helm install lockbox \

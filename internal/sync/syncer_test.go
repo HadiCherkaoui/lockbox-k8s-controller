@@ -16,14 +16,14 @@ import (
 )
 
 type mockLockboxClient struct {
-	calls      int32
+	calls      atomic.Int32
 	returnErr  bool
 	secrets    []lockbox.SecretWithMetadata
 	serverTime int64
 }
 
 func (m *mockLockboxClient) DeltaSync(_ context.Context, _ int64) ([]lockbox.SecretWithMetadata, int64, error) {
-	atomic.AddInt32(&m.calls, 1)
+	m.calls.Add(1)
 	if m.returnErr {
 		return nil, 0, fmt.Errorf("mock error")
 	}
@@ -47,8 +47,8 @@ func TestSyncer_Start_Cancels(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	// Should have fired at least twice (initial + 1 tick) within 200ms at 50ms interval
-	if atomic.LoadInt32(&mc.calls) < 2 {
-		t.Fatalf("expected >= 2 calls, got %d", atomic.LoadInt32(&mc.calls))
+	if mc.calls.Load() < 2 {
+		t.Fatalf("expected >= 2 calls, got %d", mc.calls.Load())
 	}
 }
 
@@ -96,7 +96,7 @@ func TestSyncer_LastSync_NotAdvancedOnReconcileFailure(t *testing.T) {
 	// Empty ciphertext fails inside gcm.Open (needs at least the 16-byte tag),
 	// so reconcileSecret returns an error and the syncer must hold the cursor.
 	bad := lockbox.SecretWithMetadata{
-		Namespace: "default", Name: "bad",
+		Namespace: testNamespace, Name: "bad",
 		Data: map[string]lockbox.Ciphertext{
 			"x": {Nonce: make(lockbox.IntBytes, 12), Data: lockbox.IntBytes{}},
 		},
@@ -124,7 +124,7 @@ func TestSyncer_PoisonEvent_SkippedAfterMaxAttempts(t *testing.T) {
 	// not freeze the cursor forever; after maxReconcileAttempts retries it
 	// is skipped and lastSync advances.
 	bad := lockbox.SecretWithMetadata{
-		Namespace: "default", Name: "bad", UpdatedAt: 42,
+		Namespace: testNamespace, Name: "bad", UpdatedAt: 42,
 		Data: map[string]lockbox.Ciphertext{
 			"x": {Nonce: make(lockbox.IntBytes, 12), Data: lockbox.IntBytes{}},
 		},
@@ -164,7 +164,7 @@ func TestSyncer_TransientFailure_ClearedOnSuccess(t *testing.T) {
 		},
 	}
 	good := lockbox.SecretWithMetadata{
-		Namespace: "default", Name: "x", UpdatedAt: 1,
+		Namespace: testNamespace, Name: "x", UpdatedAt: 1,
 		Data: map[string]lockbox.Ciphertext{},
 	}
 	s.LockboxClient = &mockLockboxClient{serverTime: 7, secrets: []lockbox.SecretWithMetadata{good}}

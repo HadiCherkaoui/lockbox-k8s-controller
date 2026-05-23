@@ -181,7 +181,9 @@ func main() {
 	}
 
 	// --- Lockbox sync setup ---
-	lockboxEndpoint := mustEnv("LOCKBOX_ENDPOINT")
+	// Trim a trailing slash so callers that wrote `https://lockbox.example/`
+	// don't generate `//auth/challenge` URLs that some proxies reject.
+	lockboxEndpoint := strings.TrimRight(mustEnv("LOCKBOX_ENDPOINT"), "/")
 	lockboxAPIKey := os.Getenv("LOCKBOX_API_KEY")
 
 	syncIntervalStr := os.Getenv("LOCKBOX_SYNC_INTERVAL")
@@ -240,11 +242,20 @@ func mustEnv(key string) string {
 }
 
 // controllerNamespace returns the namespace the controller pod is running in.
-// Falls back to lockbox-k8s-controller-system if the downward API file is absent.
+// Preference order:
+//  1. POD_NAMESPACE env var (set by the chart via the downward API) — works
+//     even on clusters with `automountServiceAccountToken: false`.
+//  2. Service-account namespace file mounted by kubelet.
+//  3. Compile-time fallback. Only reached when neither the env nor the file
+//     is available — likely indicates a misconfigured pod spec, and the
+//     wrong namespace would silently route the lockbox-credentials Secret
+//     to the wrong place. Operators should set POD_NAMESPACE explicitly.
 func controllerNamespace() string {
-	ns, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-	if err != nil {
-		return "lockbox-k8s-controller-system"
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
 	}
-	return strings.TrimSpace(string(ns))
+	if ns, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		return strings.TrimSpace(string(ns))
+	}
+	return "lockbox-k8s-controller-system"
 }

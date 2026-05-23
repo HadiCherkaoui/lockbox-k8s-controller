@@ -16,8 +16,17 @@ import (
 )
 
 const (
+	// managedAnnotation is the controller's internal source-of-truth: writes
+	// and deletes are gated on this so we never clobber a Secret that wasn't
+	// created or adopted by the syncer.
 	managedAnnotation      = "lockbox.io/managed"
 	managedAnnotationValue = "true"
+	// managedLabel surfaces the same "we manage this" signal as a label, so
+	// operators can run `kubectl get secrets -l app.kubernetes.io/managed-by=lockbox-k8s-controller`
+	// to enumerate managed objects. Mirrors the convention used by
+	// cert-manager, external-secrets, etc.
+	managedLabel      = "app.kubernetes.io/managed-by"
+	managedLabelValue = "lockbox-k8s-controller"
 )
 
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -78,6 +87,7 @@ func handleUpsert(
 				Name:        s.Name,
 				Namespace:   s.Namespace,
 				Annotations: map[string]string{managedAnnotation: managedAnnotationValue},
+				Labels:      map[string]string{managedLabel: managedLabelValue},
 			},
 			Type: corev1.SecretTypeOpaque,
 			Data: data,
@@ -85,7 +95,9 @@ func handleUpsert(
 	}
 
 	if existing.Annotations[managedAnnotation] == managedAnnotationValue {
-		// UPDATE
+		// UPDATE — also backfill the label on Secrets created before the
+		// label was added; harmless when already set.
+		ensureManagedLabel(&existing)
 		existing.Data = data
 		return k8sClient.Update(ctx, &existing)
 	}
@@ -96,7 +108,15 @@ func handleUpsert(
 		existing.Annotations = map[string]string{}
 	}
 	existing.Annotations[managedAnnotation] = managedAnnotationValue
+	ensureManagedLabel(&existing)
 	return k8sClient.Update(ctx, &existing)
+}
+
+func ensureManagedLabel(s *corev1.Secret) {
+	if s.Labels == nil {
+		s.Labels = map[string]string{}
+	}
+	s.Labels[managedLabel] = managedLabelValue
 }
 
 func decryptAll(seed []byte, fields map[string]lockbox.Ciphertext) (map[string][]byte, error) {

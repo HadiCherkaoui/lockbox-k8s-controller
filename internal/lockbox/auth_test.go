@@ -27,8 +27,8 @@ func TestAuth_LoadOrRegister_ExistingSecret(t *testing.T) {
 	seed := privKey.Seed()
 
 	existing := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "lockbox-credentials", Namespace: "test-ns"},
-		Data:       map[string][]byte{"seed": seed},
+		ObjectMeta: metav1.ObjectMeta{Name: credentialsSecretName, Namespace: "test-ns"},
+		Data:       map[string][]byte{credentialsSeedKey: seed},
 	}
 	fakeClient := fake.NewClientBuilder().WithObjects(existing).Build()
 
@@ -77,15 +77,15 @@ func TestAuth_LoadOrRegister_NewKeypair(t *testing.T) {
 		&stored); err != nil {
 		t.Fatalf("credentials not stored: %v", err)
 	}
-	if len(stored.Data["seed"]) != 32 {
+	if len(stored.Data[credentialsSeedKey]) != 32 {
 		t.Fatal("stored seed wrong length")
 	}
 }
 
 func TestAuth_LoadOrRegister_InvalidSeedLength(t *testing.T) {
 	existing := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "lockbox-credentials", Namespace: "test-ns"},
-		Data:       map[string][]byte{"seed": []byte("too-short")},
+		ObjectMeta: metav1.ObjectMeta{Name: credentialsSecretName, Namespace: "test-ns"},
+		Data:       map[string][]byte{credentialsSeedKey: []byte("too-short")},
 	}
 	fakeClient := fake.NewClientBuilder().WithObjects(existing).Build()
 

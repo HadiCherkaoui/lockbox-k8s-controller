@@ -65,13 +65,26 @@ func TestClient_DeltaSync_Paginates(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(AuthResponse{Success: true, Token: "tok"})
 		case secretsSyncPath:
 			calls++
+			since := r.URL.Query().Get("since")
 			if calls == 1 {
+				// Page 1 must be requested with the original cursor.
+				if since != "0" {
+					http.Error(w, "page 1 since="+since, http.StatusBadRequest)
+					return
+				}
 				// First page is full (pageLimit=1000) — caller must loop.
 				secs := make([]SecretWithMetadata, pageLimit)
 				for i := range secs {
 					secs[i] = SecretWithMetadata{Namespace: "ns", Name: fmt.Sprintf("s%d", i)}
 				}
 				_ = json.NewEncoder(w).Encode(DeltaSyncResponse{Secrets: secs, ServerTime: 100})
+				return
+			}
+			// Page 2 must advance the cursor to the server_time from page 1
+			// — guards against a regression like `cursor = since` that
+			// would re-request the same page forever.
+			if since != "100" {
+				http.Error(w, "page 2 since="+since+" (want 100)", http.StatusBadRequest)
 				return
 			}
 			// Second page short — pagination terminates here.

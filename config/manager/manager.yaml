@@ -67,6 +67,13 @@ spec:
         name: manager
         ports: []
         env:
+          # Downward API: namespace the controller pod runs in. Used to scope
+          # the lockbox-credentials Secret; works even when SA token mount is
+          # disabled.
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
           - name: LOCKBOX_ENDPOINT
             valueFrom:
               secretKeyRef:
@@ -105,7 +112,10 @@ spec:
         resources:
           limits:
             cpu: 500m
-            memory: 128Mi
+            # Kept in lockstep with deploy/values.yaml resources.limits.memory —
+            # controller-runtime's informer cache plus a 1000-event delta page
+            # can OOM at 128Mi under burst load.
+            memory: 256Mi
           requests:
             cpu: 10m
             memory: 64Mi

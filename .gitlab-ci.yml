@@ -18,7 +18,9 @@ stages:
 
 lint:
   stage: lint
-  image: golangci/golangci-lint:latest
+  # Pinned to match the Makefile-installed version. Bump intentionally —
+  # `:latest` silently introduces new rules that pass locally but break CI.
+  image: golangci/golangci-lint:v2.7.2
   script:
     - golangci-lint run
 

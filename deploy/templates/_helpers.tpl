@@ -38,8 +38,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "lockbox.serviceAccountName" -}}
 {{- if .Values.rbac.serviceAccountName -}}
 {{- .Values.rbac.serviceAccountName -}}
-{{- else -}}
+{{- else if .Values.rbac.create -}}
 {{- include "lockbox.fullname" . -}}
+{{- else -}}
+{{- fail "rbac.create=false requires rbac.serviceAccountName to be set (the chart can't reference a SA it didn't create — the pod would stay Pending)" -}}
 {{- end -}}
 {{- end -}}
 
