@@ -1,0 +1,145 @@
+# lockbox-k8s-controller Helm values.
+#
+# The controller is a polling agent: every `lockbox.syncInterval` it asks
+# the Lockbox server for a delta of secret changes since its last cursor,
+# decrypts each event with the Ed25519-derived key kept in the
+# `lockbox-credentials` Secret (auto-created on first run), and reconciles
+# the result to core/v1.Secret objects in the target namespace.
+#
+# Minimum required to install:
+#   lockbox.endpoint=https://your-lockbox.example
+#   lockbox.apiKey=<...>            # only for the very first start, then erasable
+# or
+#   lockbox.existingSecret=lockbox-config   # bring-your-own Secret with `endpoint` and optional `api-key`
+
+image:
+  # GitLab project container registry. CI publishes :<tag> on every main commit
+  # (image tag controlled by the .gitlab-ci.yml `image_tag` input — defaults to "latest").
+  repo: registry.cherkaoui.ch/hadicherkaoui/lockbox-k8s-controller
+  # Defaults to "latest" because that's what CI always pushes. For production
+  # pin to a specific digest or SHA-tagged image via Flux / sealed values —
+  # this default exists only so a vanilla `helm install` resolves to an image
+  # that actually exists in the registry.
+  tag: "latest"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Number of manager replicas. Leader election picks one active syncer; the
+# others stand by and take over if the leader dies. Setting >1 only helps
+# HA during voluntary leader churn (rolling restarts).
+replicaCount: 1
+
+# Lockbox server settings.
+lockbox:
+  # URL of the Lockbox HTTP API (e.g. https://lockbox.example/api). The
+  # controller trims a trailing slash before use, but prefer the canonical
+  # no-slash form. REQUIRED unless `lockbox.existingSecret` is set.
+  endpoint: ""
+  # Bootstrap API key. The controller uses this once to POST /auth/register
+  # its freshly generated Ed25519 public key, after which it persists the
+  # seed in the `lockbox-credentials` Secret and never reads the API key
+  # again. Safe to remove from the Secret after the first successful start
+  # (or set `skipBootstrapCheck: true` to allow an empty apiKey on subsequent
+  # rolls when lockbox-credentials already exists).
+  apiKey: ""
+  # Polling interval. Each tick is one HTTP round-trip to /secrets/sync.
+  # Lockbox returns a delta, so the bandwidth cost is proportional to churn,
+  # not total secret count.
+  syncInterval: 60s
+  # Name of an out-of-band Secret carrying `endpoint` and (optionally) `api-key`.
+  # When set, the chart does NOT render its own Secret and `lockbox.endpoint`/
+  # `lockbox.apiKey` are ignored. Use this for SOPS / sealed-secrets workflows
+  # so Helm rollbacks don't reset credentials. The Secret MUST carry an
+  # `endpoint` key (string) and MAY carry an `api-key` key; the chart does
+  # not validate the contents of an externally-managed Secret.
+  existingSecret: ""
+  # Set true to bypass the chart-time check that requires `apiKey` (or
+  # `existingSecret`). Use when re-installing or rolling against a cluster
+  # where `lockbox-credentials` already exists from a prior bootstrap.
+  skipBootstrapCheck: false
+
+# Manager flags. Leader election is on by default — required for safe
+# multi-replica deployments and harmless on single-replica.
+leaderElection:
+  enabled: true
+
+# Liveness / readiness HTTP server. The manager binds 0.0.0.0:<port>; the chart
+# uses `port` for both the --health-probe-bind-address flag and the
+# containerPort so the kubelet probe always targets the right socket.
+healthProbe:
+  port: 8081
+
+# Metrics endpoint. Off by default to keep the pod surface minimal.
+# When enabled, controller-runtime serves on :8443 over HTTPS with a
+# self-signed cert (auto-generated unless you mount your own via
+# `--metrics-cert-path`). Auth is enforced via TokenReview/SAR.
+metrics:
+  enabled: false
+  port: 8443
+  # `false` serves plain HTTP without TokenReview/SAR — only use for scrapers
+  # that can't speak TLS or that share the pod network. Default `true` matches
+  # the controller's own `secureMetrics` default.
+  secure: true
+  # Service for /metrics scrape. Only created when metrics.enabled.
+  service:
+    type: ClusterIP
+
+# Prometheus ServiceMonitor (requires the prometheus-operator CRDs).
+# Gated behind metrics.enabled — no point scraping a disabled endpoint.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  # The auto-generated metrics cert is self-signed, so the scraper has to
+  # skip verification. Replace with proper certs in production via the
+  # `--metrics-cert-*` flags.
+  insecureSkipVerify: true
+  labels: {}
+
+# Pod-level resources. The defaults bump the kubebuilder scaffold's 128Mi
+# limit — controller-runtime's informer cache plus a long delta page (1000
+# events) can comfortably exceed it.
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Pod security context. Aligned with the distroless `:nonroot` base (uid 65532).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container security context. Locked down to satisfy the `restricted` Pod
+# Security Standard.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Scheduling controls.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+# Termination grace. The syncer's loop reacts to ctx cancellation within a
+# tick, so a short grace is enough; leader election uses ReleaseOnCancel=false
+# (controller-runtime default), so the lease takes one renewal interval to
+# transfer either way.
+terminationGracePeriodSeconds: 10
+
+# RBAC. The controller needs cluster-wide CRUD on Secrets (it writes to
+# arbitrary namespaces dictated by the Lockbox events) plus namespaced
+# leader-election rights in its own namespace.
+rbac:
+  create: true
+  # Empty string => the chart generates a SA named after the release.
+  serviceAccountName: ""

@@ -10,6 +10,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller/internal/lockbox"
 )
@@ -88,6 +89,91 @@ func TestSyncer_ErrorDoesNotPanic(t *testing.T) {
 	// Should not panic even when DeltaSync returns an error
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+}
+
+func TestSyncer_LastSync_NotAdvancedOnReconcileFailure(t *testing.T) {
+	// Empty ciphertext fails inside gcm.Open (needs at least the 16-byte tag),
+	// so reconcileSecret returns an error and the syncer must hold the cursor.
+	bad := lockbox.SecretWithMetadata{
+		Namespace: "default", Name: "bad",
+		Data: map[string]lockbox.Ciphertext{
+			"x": {Nonce: make(lockbox.IntBytes, 12), Data: lockbox.IntBytes{}},
+		},
+	}
+	mc := &mockLockboxClient{serverTime: 999, secrets: []lockbox.SecretWithMetadata{bad}}
+	fc := fake.NewClientBuilder().Build()
+	s := &Syncer{
+		LockboxClient: mc,
+		K8sClient:     fc,
+		Seed:          make([]byte, 32),
+		Interval:      time.Hour,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if s.lastSync != 0 {
+		t.Fatalf("lastSync must stay at 0 on partial failure, got %d", s.lastSync)
+	}
+}
+
+func TestSyncer_PoisonEvent_SkippedAfterMaxAttempts(t *testing.T) {
+	// A permanently-failing event (empty ciphertext → gcm.Open error) must
+	// not freeze the cursor forever; after maxReconcileAttempts retries it
+	// is skipped and lastSync advances.
+	bad := lockbox.SecretWithMetadata{
+		Namespace: "default", Name: "bad", UpdatedAt: 42,
+		Data: map[string]lockbox.Ciphertext{
+			"x": {Nonce: make(lockbox.IntBytes, 12), Data: lockbox.IntBytes{}},
+		},
+	}
+	mc := &mockLockboxClient{serverTime: 999, secrets: []lockbox.SecretWithMetadata{bad}}
+	fc := fake.NewClientBuilder().Build()
+	s := &Syncer{
+		LockboxClient: mc,
+		K8sClient:     fc,
+		Seed:          make([]byte, 32),
+		Interval:      time.Hour,
+	}
+	// Direct invocation avoids racing the ticker.
+	for i := range maxReconcileAttempts {
+		s.syncOnce(t.Context(), zap.New().WithName("test"))
+		if s.lastSync != 0 {
+			t.Fatalf("lastSync advanced before maxAttempts at iteration %d: %d", i, s.lastSync)
+		}
+	}
+	// One more tick — at this point the event has hit the threshold and is skipped.
+	s.syncOnce(t.Context(), zap.New().WithName("test"))
+	if s.lastSync != 999 {
+		t.Fatalf("lastSync should advance after maxAttempts (poison skip), got %d", s.lastSync)
+	}
+}
+
+func TestSyncer_TransientFailure_ClearedOnSuccess(t *testing.T) {
+	// A reconcile that initially fails (recorded in failedAttempts) but then
+	// succeeds on a retry must clear its counter so a later transient failure
+	// gets a full maxReconcileAttempts budget.
+	s := &Syncer{
+		LockboxClient: &mockLockboxClient{},
+		K8sClient:     fake.NewClientBuilder().Build(),
+		Seed:          make([]byte, 32),
+		failedAttempts: map[string]int{
+			"default/x@1": 5,
+		},
+	}
+	good := lockbox.SecretWithMetadata{
+		Namespace: "default", Name: "x", UpdatedAt: 1,
+		Data: map[string]lockbox.Ciphertext{},
+	}
+	s.LockboxClient = &mockLockboxClient{serverTime: 7, secrets: []lockbox.SecretWithMetadata{good}}
+	s.syncOnce(t.Context(), zap.New().WithName("test"))
+	if got := s.failedAttempts["default/x@1"]; got != 0 {
+		t.Fatalf("failedAttempts not cleared on success: %d", got)
+	}
+	if s.lastSync != 7 {
+		t.Fatalf("lastSync did not advance after success: %d", s.lastSync)
 	}
 }
 

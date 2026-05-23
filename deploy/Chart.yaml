@@ -1,0 +1,9 @@
+apiVersion: v2
+name: lockbox-k8s-controller
+description: Syncs encrypted secrets from a Lockbox server into Kubernetes Secrets.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller
+maintainers:
+  - name: HadiCherkaoui

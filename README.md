@@ -1,121 +1,131 @@
 # lockbox-k8s-controller
-// TODO(user): Add simple overview of use/purpose
+
+A Kubernetes controller that syncs encrypted secrets from a
+[Lockbox](https://gitlab.cherkaoui.ch/HadiCherkaoui) server into native
+`core/v1.Secret` objects in your cluster.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
 
-## Getting Started
+The controller polls the Lockbox HTTP API on a fixed interval (default 60s),
+authenticates with an Ed25519 keypair via challenge-response, fetches the
+delta of secret changes since its last cursor, and decrypts each event with
+AES-256-GCM (key derived from the Ed25519 seed). For every event it reconciles
+the matching Kubernetes Secret in the namespace dictated by Lockbox:
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+- **CREATE** — Secret didn't exist; create it with `lockbox.io/managed=true`.
+- **UPDATE** — Secret already managed; rewrite its `data`.
+- **ADOPT** — Secret pre-existed and was unmanaged; mark it managed, leave data untouched.
+- **DELETE** — Secret managed and removed upstream; delete it.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+The keypair is generated on first start, registered with Lockbox using a
+bootstrap API key, and persisted in the `lockbox-credentials` Secret in the
+controller's own namespace. Subsequent restarts work without the bootstrap key.
+
+The controller is implemented as a `manager.Runnable` under
+[controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) and
+ships no CRDs — Secret reconciliation is driven entirely by the upstream
+Lockbox delta stream.
+
+## Installation
+
+### Helm (recommended)
+
+The chart is published as an OCI artifact in the project's GitLab container
+registry on every commit to `main` that touches `deploy/`.
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/lockbox-k8s-controller:tag
+helm install lockbox \
+  oci://registry.cherkaoui.ch/hadicherkaoui/lockbox-k8s-controller/lockbox-k8s-controller \
+  --version 0.1.0 \
+  --namespace lockbox-system --create-namespace \
+  --set lockbox.endpoint=https://lockbox.example \
+  --set lockbox.apiKey=<bootstrap-api-key>
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
-
-**Install the CRDs into the cluster:**
+For SOPS / sealed-secrets workflows, point the chart at a bring-your-own Secret
+carrying `endpoint` and optional `api-key` keys:
 
 ```sh
-make install
+helm install lockbox \
+  oci://registry.cherkaoui.ch/hadicherkaoui/lockbox-k8s-controller/lockbox-k8s-controller \
+  --version 0.1.0 \
+  --namespace lockbox-system --create-namespace \
+  --set lockbox.existingSecret=my-lockbox-config \
+  --set lockbox.skipBootstrapCheck=true
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+For Flux's `HelmRepository` (kind `oci`), the URL is the parent path without
+the chart-name segment:
 
-```sh
-make deploy IMG=<some-registry>/lockbox-k8s-controller:tag
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata: { name: lockbox, namespace: flux-system }
+spec:
+  type: oci
+  url: oci://registry.cherkaoui.ch/hadicherkaoui/lockbox-k8s-controller
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+Key values — see [`deploy/values.yaml`](deploy/values.yaml) for the full list:
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+| Value | Default | Notes |
+| --- | --- | --- |
+| `lockbox.endpoint` | `""` | **Required** unless `existingSecret` is set. |
+| `lockbox.apiKey` | `""` | Bootstrap key for first registration; safe to remove after. |
+| `lockbox.syncInterval` | `60s` | Poll interval. |
+| `lockbox.existingSecret` | `""` | Bring-your-own Secret with `endpoint` + optional `api-key`. |
+| `lockbox.skipBootstrapCheck` | `false` | Bypass chart-time guard requiring `apiKey` or `existingSecret`. |
+| `replicaCount` | `1` | Leader election picks one active syncer. |
+| `metrics.enabled` | `false` | Enables `:8443` HTTPS metrics with auth. |
+| `serviceMonitor.enabled` | `false` | Renders a `prometheus-operator` ServiceMonitor (requires `metrics.enabled`). |
+| `resources.limits.memory` | `256Mi` | Bumped from kubebuilder default to accommodate burst pages. |
+
+### Kustomize (alternative)
 
 ```sh
-kubectl apply -k config/samples/
+make docker-build docker-push IMG=<registry>/lockbox-k8s-controller:tag
+make deploy IMG=<registry>/lockbox-k8s-controller:tag
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+Then create the `lockbox-config` Secret with `endpoint` and optional `api-key`:
 
 ```sh
-kubectl delete -k config/samples/
+kubectl -n lockbox-k8s-controller-system create secret generic lockbox-config \
+  --from-literal=endpoint=https://lockbox.example \
+  --from-literal=api-key=<bootstrap-api-key>
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+### Uninstall
 
 ```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
+helm uninstall lockbox -n lockbox-system
+# or
 make undeploy
 ```
 
-## Project Distribution
+`lockbox-credentials` is intentionally not removed — keep it if you plan to
+reinstall against the same Lockbox server (deleting it forces a fresh keypair
+registration).
 
-Following the options to release and provide this solution to the users.
+## Development
 
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/lockbox-k8s-controller:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+Run the controller locally against the current kubeconfig context:
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/lockbox-k8s-controller/<tag or branch>/dist/install.yaml
+export LOCKBOX_ENDPOINT=https://lockbox.example
+export LOCKBOX_API_KEY=<bootstrap-api-key>
+make run
 ```
 
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
+Unit tests use envtest plus fake clients:
 
 ```sh
-kubebuilder edit --plugins=helm/v2-alpha
+make test
+make lint           # golangci-lint
+helm lint deploy/   # chart validation
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+See [`AGENTS.md`](AGENTS.md) for kubebuilder conventions used in this repo.
 
 ## License
 
@@ -132,4 +142,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-

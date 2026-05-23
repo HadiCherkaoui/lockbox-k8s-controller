@@ -1,0 +1,23 @@
+{{- if and .Values.rbac.create .Values.leaderElection.enabled -}}
+{{- /* Leader election uses coordination.k8s.io/leases (the controller-runtime
+       default); configmaps stay for legacy fallback. events lets the manager
+       publish reason/status to objects it reconciles. All namespaced to the
+       release namespace — leases scope per-controller, not cluster-wide. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "lockbox.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lockbox.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+{{- end -}}

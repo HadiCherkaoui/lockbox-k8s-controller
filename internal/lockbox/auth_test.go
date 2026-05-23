@@ -16,7 +16,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-const authChallengePath = "/auth/challenge"
+const (
+	authChallengePath = "/auth/challenge"
+	authVerifyPath    = "/auth/verify"
+	secretsSyncPath   = "/secrets/sync"
+)
 
 func TestAuth_LoadOrRegister_ExistingSecret(t *testing.T) {
 	_, privKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -149,7 +153,7 @@ func TestAuth_GetToken(t *testing.T) {
 		switch r.URL.Path {
 		case authChallengePath:
 			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: IntBytes(challenge)})
-		case "/auth/verify":
+		case authVerifyPath:
 			var req AuthRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			pubKey := ed25519.PublicKey(req.PublicKey)

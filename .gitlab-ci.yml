@@ -14,6 +14,7 @@ stages:
   - lint
   - test
   - build
+  - publish
 
 lint:
   stage: lint
@@ -68,6 +69,28 @@ build:image:
         - Dockerfile
     - if: $CI_PIPELINE_SOURCE == "web"
       when: manual
+
+# -------------------------
+# Publish Helm chart as OCI artifact
+# -------------------------
+# Mirrors anvil's pattern: package deploy/ and push to the project's
+# container registry as an OCI chart. Flux's HelmRepository (kind: oci)
+# can then pull it without a git source.
+# Chart version comes from deploy/Chart.yaml — bump that field on each release.
+helm-publish:
+  stage: publish
+  image: alpine/helm:3
+  before_script:
+    - helm registry login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - set -euo pipefail
+    - helm package deploy/ --destination /tmp/
+    - helm push /tmp/lockbox-k8s-controller-*.tgz "oci://$CI_REGISTRY_IMAGE"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - deploy/**/*
+        - .gitlab-ci.yml
 
 # -------------------------
 # Sonar

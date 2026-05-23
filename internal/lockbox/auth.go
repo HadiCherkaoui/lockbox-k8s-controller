@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -18,7 +19,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const credentialsSecretName = "lockbox-credentials"
+const (
+	credentialsSecretName = "lockbox-credentials"
+	// httpTimeout caps every Lockbox HTTP call. A hung endpoint must not stall
+	// the polling syncer (which would block leader-election lease renewal).
+	httpTimeout = 30 * time.Second
+)
 
 // Auth manages the Ed25519 keypair and JWT acquisition for Lockbox.
 type Auth struct {
@@ -33,7 +39,7 @@ func NewAuth(endpoint, apiKey string) *Auth {
 	return &Auth{
 		endpoint: endpoint,
 		apiKey:   apiKey,
-		http:     &http.Client{},
+		http:     &http.Client{Timeout: httpTimeout},
 	}
 }
 
