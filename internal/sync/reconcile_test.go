@@ -16,7 +16,10 @@ import (
 	"gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller/internal/lockbox"
 )
 
-const testNamespace = "default"
+const (
+	testNamespace  = "default"
+	testSecretName = "my-secret"
+)
 
 var testSeed = make([]byte, 32)
 
@@ -36,7 +39,7 @@ func encryptField(t *testing.T, nonce []byte, plaintext []byte) lockbox.Cipherte
 
 func newSecret(managed bool) *corev1.Secret {
 	s := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: testSecretName, Namespace: testNamespace},
 		Data:       map[string][]byte{"existing-key": []byte("existing-val")},
 	}
 	if managed {
@@ -50,7 +53,7 @@ func TestReconcile_Create(t *testing.T) {
 	nonce := make([]byte, 12)
 	event := lockbox.SecretWithMetadata{
 		Namespace: testNamespace,
-		Name:      "my-secret",
+		Name:      testSecretName,
 		Data:      map[string]lockbox.Ciphertext{"password": encryptField(t, nonce, []byte("hunter2"))},
 	}
 	logger := zap.New().WithName("test")
@@ -58,7 +61,7 @@ func TestReconcile_Create(t *testing.T) {
 		t.Fatalf("reconcileSecret: %v", err)
 	}
 	var got corev1.Secret
-	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-secret"}, &got); err != nil {
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testSecretName}, &got); err != nil {
 		t.Fatalf("secret not created: %v", err)
 	}
 	if got.Annotations[managedAnnotation] != managedAnnotationValue {
@@ -80,7 +83,7 @@ func TestReconcile_Update(t *testing.T) {
 	nonce[0] = 1
 	event := lockbox.SecretWithMetadata{
 		Namespace: testNamespace,
-		Name:      "my-secret",
+		Name:      testSecretName,
 		Data:      map[string]lockbox.Ciphertext{"password": encryptField(t, nonce, []byte("new-pass"))},
 	}
 	logger := zap.New().WithName("test")
@@ -88,7 +91,7 @@ func TestReconcile_Update(t *testing.T) {
 		t.Fatalf("reconcileSecret: %v", err)
 	}
 	var got corev1.Secret
-	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-secret"}, &got); err != nil {
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testSecretName}, &got); err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if string(got.Data["password"]) != "new-pass" {
@@ -102,7 +105,7 @@ func TestReconcile_Adopt(t *testing.T) {
 
 	event := lockbox.SecretWithMetadata{
 		Namespace: testNamespace,
-		Name:      "my-secret",
+		Name:      testSecretName,
 		Data:      map[string]lockbox.Ciphertext{},
 	}
 	logger := zap.New().WithName("test")
@@ -110,7 +113,7 @@ func TestReconcile_Adopt(t *testing.T) {
 		t.Fatalf("reconcileSecret: %v", err)
 	}
 	var got corev1.Secret
-	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-secret"}, &got); err != nil {
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testSecretName}, &got); err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if got.Annotations[managedAnnotation] != managedAnnotationValue {
@@ -131,7 +134,7 @@ func TestReconcile_Delete_Managed(t *testing.T) {
 	ts := int64(1234)
 	event := lockbox.SecretWithMetadata{
 		Namespace: testNamespace,
-		Name:      "my-secret",
+		Name:      testSecretName,
 		DeletedAt: &ts,
 	}
 	logger := zap.New().WithName("test")
@@ -139,7 +142,7 @@ func TestReconcile_Delete_Managed(t *testing.T) {
 		t.Fatalf("reconcileSecret: %v", err)
 	}
 	var got corev1.Secret
-	err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-secret"}, &got)
+	err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testSecretName}, &got)
 	if err == nil {
 		t.Fatal("expected secret to be deleted")
 	}
@@ -152,7 +155,7 @@ func TestReconcile_Delete_Unmanaged(t *testing.T) {
 	ts := int64(1234)
 	event := lockbox.SecretWithMetadata{
 		Namespace: testNamespace,
-		Name:      "my-secret",
+		Name:      testSecretName,
 		DeletedAt: &ts,
 	}
 	logger := zap.New().WithName("test")
@@ -161,7 +164,7 @@ func TestReconcile_Delete_Unmanaged(t *testing.T) {
 	}
 	// Secret must still exist
 	var got corev1.Secret
-	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-secret"}, &got); err != nil {
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testSecretName}, &got); err != nil {
 		t.Fatal("unmanaged secret was deleted — must not happen")
 	}
 }

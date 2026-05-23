@@ -11,29 +11,50 @@ import (
 	"testing"
 )
 
+const deltaSyncErrFmt = "DeltaSync: %v"
+
+// writeJSON encodes v as JSON and ignores the encode error — test handlers
+// don't care about partial writes and ignoring errcheck-style errors keeps
+// the call sites readable.
+func writeJSON(w http.ResponseWriter, v any) {
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// handleAuthMock answers /auth/challenge and /auth/verify with a hard-coded
+// 32-byte zero challenge and the supplied token. Returns true if the request
+// path matched (and the response is fully written), false otherwise — the
+// caller's handler chains its own /secrets/sync logic when false.
+func handleAuthMock(w http.ResponseWriter, r *http.Request, token string) bool {
+	switch r.URL.Path {
+	case authChallengePath:
+		writeJSON(w, ChallengeResponse{Challenge: make(IntBytes, 32)})
+		return true
+	case authVerifyPath:
+		writeJSON(w, AuthResponse{Success: true, Token: token})
+		return true
+	}
+	return false
+}
+
 func TestClient_DeltaSync_Success(t *testing.T) {
 	ts := int64(9999)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case authChallengePath:
-			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: make(IntBytes, 32)})
-		case authVerifyPath:
-			_ = json.NewEncoder(w).Encode(AuthResponse{Success: true, Token: "tok"})
-		case secretsSyncPath:
+		setJSONHeader(w)
+		if handleAuthMock(w, r, "tok") {
+			return
+		}
+		if r.URL.Path == secretsSyncPath {
 			if r.Header.Get("Authorization") != "Bearer tok" {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(DeltaSyncResponse{
-				Secrets: []SecretWithMetadata{
-					{Namespace: "ns1", Name: "s1"},
-				},
+			writeJSON(w, DeltaSyncResponse{
+				Secrets:    []SecretWithMetadata{{Namespace: "ns1", Name: "s1"}},
 				ServerTime: ts,
 			})
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
@@ -44,7 +65,7 @@ func TestClient_DeltaSync_Success(t *testing.T) {
 
 	secrets, serverTime, err := c.DeltaSync(context.Background(), 0)
 	if err != nil {
-		t.Fatalf("DeltaSync: %v", err)
+		t.Fatalf(deltaSyncErrFmt, err)
 	}
 	if len(secrets) != 1 || secrets[0].Name != "s1" {
 		t.Fatalf("unexpected secrets: %v", secrets)
@@ -54,47 +75,48 @@ func TestClient_DeltaSync_Success(t *testing.T) {
 	}
 }
 
+// paginateSyncPage emits one mocked page of /secrets/sync, asserting that the
+// `since` query param advances correctly between calls. Lifting it out of the
+// httptest handler keeps the test's cognitive complexity manageable.
+func paginateSyncPage(w http.ResponseWriter, since string, callNum int) {
+	if callNum == 1 {
+		if since != "0" {
+			http.Error(w, "page 1 since="+since, http.StatusBadRequest)
+			return
+		}
+		// Full page (pageLimit) forces the caller to loop.
+		secs := make([]SecretWithMetadata, pageLimit)
+		for i := range secs {
+			secs[i] = SecretWithMetadata{Namespace: "ns", Name: fmt.Sprintf("s%d", i)}
+		}
+		writeJSON(w, DeltaSyncResponse{Secrets: secs, ServerTime: 100})
+		return
+	}
+	// Page 2 MUST advance the cursor to the previous server_time — a
+	// regression like `cursor = since` would re-request the same page forever.
+	if since != "100" {
+		http.Error(w, "page 2 since="+since+" (want 100)", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, DeltaSyncResponse{
+		Secrets:    []SecretWithMetadata{{Namespace: "ns", Name: "tail"}},
+		ServerTime: 200,
+	})
+}
+
 func TestClient_DeltaSync_Paginates(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case authChallengePath:
-			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: make(IntBytes, 32)})
-		case authVerifyPath:
-			_ = json.NewEncoder(w).Encode(AuthResponse{Success: true, Token: "tok"})
-		case secretsSyncPath:
-			calls++
-			since := r.URL.Query().Get("since")
-			if calls == 1 {
-				// Page 1 must be requested with the original cursor.
-				if since != "0" {
-					http.Error(w, "page 1 since="+since, http.StatusBadRequest)
-					return
-				}
-				// First page is full (pageLimit=1000) — caller must loop.
-				secs := make([]SecretWithMetadata, pageLimit)
-				for i := range secs {
-					secs[i] = SecretWithMetadata{Namespace: "ns", Name: fmt.Sprintf("s%d", i)}
-				}
-				_ = json.NewEncoder(w).Encode(DeltaSyncResponse{Secrets: secs, ServerTime: 100})
-				return
-			}
-			// Page 2 must advance the cursor to the server_time from page 1
-			// — guards against a regression like `cursor = since` that
-			// would re-request the same page forever.
-			if since != "100" {
-				http.Error(w, "page 2 since="+since+" (want 100)", http.StatusBadRequest)
-				return
-			}
-			// Second page short — pagination terminates here.
-			_ = json.NewEncoder(w).Encode(DeltaSyncResponse{
-				Secrets:    []SecretWithMetadata{{Namespace: "ns", Name: "tail"}},
-				ServerTime: 200,
-			})
-		default:
-			http.NotFound(w, r)
+		setJSONHeader(w)
+		if handleAuthMock(w, r, "tok") {
+			return
 		}
+		if r.URL.Path == secretsSyncPath {
+			calls++
+			paginateSyncPage(w, r.URL.Query().Get("since"), calls)
+			return
+		}
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
@@ -102,7 +124,7 @@ func TestClient_DeltaSync_Paginates(t *testing.T) {
 	c := NewClient(srv.URL, a)
 	secrets, serverTime, err := c.DeltaSync(context.Background(), 0)
 	if err != nil {
-		t.Fatalf("DeltaSync: %v", err)
+		t.Fatalf(deltaSyncErrFmt, err)
 	}
 	if len(secrets) != pageLimit+1 {
 		t.Fatalf("expected %d secrets across both pages, got %d", pageLimit+1, len(secrets))
@@ -122,32 +144,36 @@ func TestClient_DeltaSync_RefreshesOn401(t *testing.T) {
 	tokenIdx := 0
 	syncCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case authChallengePath:
-			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: make(IntBytes, 32)})
-		case authVerifyPath:
-			tok := tokens[tokenIdx]
+		setJSONHeader(w)
+		// Inline auth mock — handleAuthMock takes a static token; this test
+		// needs a fresh one per /auth/verify so the retry actually carries
+		// a different Bearer.
+		if r.URL.Path == authChallengePath {
+			writeJSON(w, ChallengeResponse{Challenge: make(IntBytes, 32)})
+			return
+		}
+		if r.URL.Path == authVerifyPath {
+			writeJSON(w, AuthResponse{Success: true, Token: tokens[tokenIdx]})
 			tokenIdx++
-			_ = json.NewEncoder(w).Encode(AuthResponse{Success: true, Token: tok})
-		case secretsSyncPath:
+			return
+		}
+		if r.URL.Path == secretsSyncPath {
 			syncCalls++
 			if syncCalls == 1 {
 				http.Error(w, "expired", http.StatusUnauthorized)
 				return
 			}
-			// The retry must carry the refreshed bearer.
 			if got := r.Header.Get("Authorization"); got != "Bearer new-token" {
 				http.Error(w, "wrong token: "+got, http.StatusForbidden)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(DeltaSyncResponse{
+			writeJSON(w, DeltaSyncResponse{
 				Secrets:    []SecretWithMetadata{{Namespace: "ns", Name: "s1"}},
 				ServerTime: 10,
 			})
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
@@ -155,7 +181,7 @@ func TestClient_DeltaSync_RefreshesOn401(t *testing.T) {
 	c := NewClient(srv.URL, a)
 	secrets, serverTime, err := c.DeltaSync(context.Background(), 0)
 	if err != nil {
-		t.Fatalf("DeltaSync: %v", err)
+		t.Fatalf(deltaSyncErrFmt, err)
 	}
 	if len(secrets) != 1 || secrets[0].Name != "s1" {
 		t.Fatalf("unexpected secrets: %v", secrets)

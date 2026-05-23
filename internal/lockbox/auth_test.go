@@ -20,7 +20,16 @@ const (
 	authChallengePath = "/auth/challenge"
 	authVerifyPath    = "/auth/verify"
 	secretsSyncPath   = "/secrets/sync"
+
+	headerContentType   = "Content-Type"
+	mimeApplicationJSON = "application/json"
 )
+
+// setJSONHeader stamps Content-Type: application/json on the test response —
+// every Lockbox mock endpoint emits JSON, so this is repeated everywhere.
+func setJSONHeader(w http.ResponseWriter) {
+	w.Header().Set(headerContentType, mimeApplicationJSON)
+}
 
 func TestAuth_LoadOrRegister_ExistingSecret(t *testing.T) {
 	_, privKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -50,7 +59,7 @@ func TestAuth_LoadOrRegister_NewKeypair(t *testing.T) {
 				http.Error(w, "bad key", http.StatusUnauthorized)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
+			setJSONHeader(w)
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 			return
 		}
@@ -126,7 +135,7 @@ func TestAuth_GetToken_ChallengeFails(t *testing.T) {
 
 func TestAuth_GetToken_VerifyFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		setJSONHeader(w)
 		if r.URL.Path == authChallengePath {
 			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: make(IntBytes, 32)})
 			return
@@ -149,7 +158,7 @@ func TestAuth_GetToken(t *testing.T) {
 	_, _ = rand.Read(challenge)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		setJSONHeader(w)
 		switch r.URL.Path {
 		case authChallengePath:
 			_ = json.NewEncoder(w).Encode(ChallengeResponse{Challenge: IntBytes(challenge)})
