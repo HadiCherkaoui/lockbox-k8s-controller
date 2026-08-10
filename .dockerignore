@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
 # Ignore everything by default and re-include only needed files
 **

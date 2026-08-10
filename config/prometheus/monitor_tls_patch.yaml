@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Patch for Prometheus ServiceMonitor to enable secure TLS configuration
 # using certificates managed by cert-manager
 - op: replace

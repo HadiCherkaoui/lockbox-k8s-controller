@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Hadi Cherkaoui <contact@hide.cherkaoui.ch>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # This patch adds the args to allow exposing the metrics endpoint using HTTPS
 - op: add
   path: /spec/template/spec/containers/0/args/0
