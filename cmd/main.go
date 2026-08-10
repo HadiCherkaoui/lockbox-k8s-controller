@@ -225,6 +225,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Headless controller: kubectl logs is the only surface a user ever sees, so
+	// the credit and the source offer are emitted once at every start.
+	setupLog.Info("lockbox-k8s-controller",
+		"copyright", "Hadi Cherkaoui",
+		"license", "AGPL-3.0-or-later",
+		"source", "https://gitlab.cherkaoui.ch/HadiCherkaoui/lockbox-k8s-controller",
+	)
+
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
