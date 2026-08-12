@@ -68,19 +68,25 @@ vulncheck:
 .build_docker_common:
   image: docker:28.0.4
   services:
-    # No `command:` override — dind's default entrypoint generates a CA and
-    # serves the API over mutual TLS on 2376. Forcing --tls=false on
-    # 0.0.0.0:2375 published an unauthenticated root-equivalent Docker API for
-    # the job's lifetime; on a Kubernetes-executor runner that socket is
-    # reachable by anything that can schedule a pod, which is enough to inject
-    # a layer between build and push.
+    # dind listens on loopback only. Under the Kubernetes executor the service
+    # and build containers share one pod network namespace, so 127.0.0.1 is
+    # reachable from the build step while nothing outside the pod can connect
+    # at all — binding 0.0.0.0 published the API on the pod IP, where anything
+    # able to schedule a pod could reach it and inject a layer between build
+    # and push.
+    #
+    # Not mutual TLS: dind writes its generated certs inside the *service*
+    # container, and the Kubernetes executor mounts no shared volume for them,
+    # so the build container cannot read /certs/client. Making that work needs
+    # an empty_dir for /certs in the runner's config.toml, which is not
+    # repo-side. Loopback removes the reachability instead of authenticating
+    # it, which closes the same hole without runner changes.
     - name: docker:28.0.4-dind
       alias: docker
+      command: ["dockerd", "--host=tcp://127.0.0.1:2375", "--host=unix:///var/run/docker.sock", "--tls=false"]
   variables:
-    DOCKER_HOST: tcp://docker:2376
-    DOCKER_TLS_CERTDIR: "/certs"
-    DOCKER_TLS_VERIFY: "1"
-    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_HOST: tcp://127.0.0.1:2375
+    DOCKER_TLS_CERTDIR: ""
     DOCKER_BUILDKIT: "1"
   before_script:
     - docker info
