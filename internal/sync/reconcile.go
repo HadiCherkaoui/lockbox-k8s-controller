@@ -37,10 +37,6 @@ const (
 	// cert-manager, external-secrets, etc.
 	managedLabel      = "app.kubernetes.io/managed-by"
 	managedLabelValue = "lockbox-k8s-controller"
-	// credentialsSecretName is the Secret holding this controller's Ed25519
-	// seed. Events naming it are refused unconditionally — adopting it would
-	// let an upstream event overwrite the only key that decrypts everything.
-	credentialsSecretName = "lockbox-credentials"
 )
 
 // DefaultDeniedNamespaces are refused unless the operator overrides the list.
@@ -129,9 +125,16 @@ func reconcileSecret(
 				"(see LOCKBOX_DENIED_NAMESPACES / LOCKBOX_ALLOWED_NAMESPACES)",
 			s.Namespace, s.Name, s.Namespace)
 	}
-	if s.Namespace == pol.ControllerNamespace && s.Name == credentialsSecretName {
+	if s.Namespace == pol.ControllerNamespace {
+		// The whole namespace, not just lockbox-credentials by name. The adopt
+		// opt-in only guards Secrets that currently exist: if one is pruned and
+		// recreated (Flux reconcile, chart upgrade), an event naming it lands in
+		// the CREATE branch during that gap and the controller writes
+		// server-supplied data into a Secret nothing here should ever author.
+		// The controller's own namespace holds its seed and its bootstrap
+		// credentials; nothing in it is a legitimate sync target.
 		return outcomeNoop, fmt.Errorf(
-			"refusing event for %s/%s: the controller's own credentials Secret is never syncable",
+			"refusing event for %s/%s: the controller's own namespace is never a sync target",
 			s.Namespace, s.Name)
 	}
 
@@ -269,6 +272,16 @@ func decryptAll(seed []byte, pol Policy, s lockbox.SecretWithMetadata) (map[stri
 		}
 		plaintext, err := lockbox.Decrypt(seed, ct, aad)
 		if err != nil {
+			if pol.RequireAAD {
+				// The overwhelmingly likely cause is a secret written before the
+				// server began sealing with AAD, not an attack. There is
+				// deliberately no unbound fallback — accepting a blob whose
+				// binding fails is exactly what the binding exists to prevent,
+				// and an attacker would simply strip it. Migrate instead.
+				return nil, fmt.Errorf("field %q: %w — if this secret predates AAD sealing, "+
+					"migrate it with `lbx reseal`, or set LOCKBOX_REQUIRE_AAD=false to sync "+
+					"unbound secrets while you do", k, err)
+			}
 			return nil, fmt.Errorf("field %q: %w", k, err)
 		}
 		result[k] = plaintext

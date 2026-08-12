@@ -261,18 +261,31 @@ func TestReconcile_StrictAllowlistWhenSet(t *testing.T) {
 	}
 }
 
-func TestReconcile_RefusesOwnCredentialsSecret(t *testing.T) {
+func TestReconcile_RefusesOwnNamespace(t *testing.T) {
 	// Overwriting the seed destroys the only key that decrypts everything in
 	// Lockbox, and the controller then fails its length check on next restart.
-	fc := fake.NewClientBuilder().Build()
-	event := upsertEvent(t, testControlNS, credentialsSecretName, "seed", "not-a-real-seed", 7)
+	// The whole namespace is refused, not just lockbox-credentials by name: the
+	// adopt opt-in only guards Secrets that exist, so a Secret pruned and
+	// recreated by Flux leaves a window where an event naming it takes the
+	// CREATE path. lockbox-auth carries API_KEY and JWT_SECRET.
+	for _, name := range []string{"lockbox-credentials", "lockbox-auth", "lockbox-config", "anything-else"} {
+		t.Run(name, func(t *testing.T) {
+			fc := fake.NewClientBuilder().Build()
+			event := upsertEvent(t, testControlNS, name, "seed", "not-a-real-seed", 7)
 
-	got, err := reconcileSecret(context.Background(), testLogger(), fc, testSeed, testPolicy(), event)
-	if err == nil {
-		t.Fatal("expected refusal for the controller's own credentials Secret")
-	}
-	if got != outcomeNoop {
-		t.Fatalf("expected outcomeNoop, got %v", got)
+			got, err := reconcileSecret(context.Background(), testLogger(), fc, testSeed, testPolicy(), event)
+			if err == nil {
+				t.Fatalf("expected refusal for %s in the controller's own namespace", name)
+			}
+			if got != outcomeNoop {
+				t.Fatalf("expected outcomeNoop, got %v", got)
+			}
+			var secret corev1.Secret
+			if getErr := fc.Get(context.Background(),
+				types.NamespacedName{Namespace: testControlNS, Name: name}, &secret); getErr == nil {
+				t.Fatal("secret must not be created in the controller's own namespace")
+			}
+		})
 	}
 }
 

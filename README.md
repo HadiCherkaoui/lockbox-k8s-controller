@@ -62,10 +62,38 @@ event never exists in the process:
   with the identical construction (`lockbox.AADFor`); set false to fall back to
   an older server.
 
+Events naming the controller's **own namespace** are always refused. The adopt
+opt-in only guards Secrets that currently exist, so a Secret pruned and
+recreated by Flux would otherwise leave a window where an event naming it takes
+the CREATE path — and that namespace holds the seed and the bootstrap key.
+
 AAD binds *location*, not *freshness* — `updated_at` cannot participate, because
 the sealer never sees it and a partial update re-stamps it while leaving
 untouched fields sealed under the old value. Replay of an old blob at the same
 coordinates is therefore not prevented here and needs a separate mechanism.
+
+Note what each layer actually buys: the **server-side namespace pin** is what
+stops a secret being redirected at all. The denylist stops a redirection into
+the namespaces where that becomes cluster takeover — it does not stop
+redirection into `default` or any namespace an attacker already reads, so it is
+not a fallback for the pin.
+
+#### Enabling AAD on an existing install
+
+`requireAAD` is on by default and there is deliberately **no unbound fallback** —
+accepting a blob whose binding fails is what the binding exists to prevent.
+Secrets written before the server began sealing carry an empty AAD, so enabling
+this against un-migrated data makes the controller refuse every field of every
+existing secret. Order matters:
+
+1. Deploy the Lockbox server that seals with `AADFor`.
+2. Update `lbx`.
+3. Run `lbx reseal` to re-seal existing secrets bound (idempotent; `--dry-run`
+   first). `lbx get` reports how many fields are still unbound.
+4. Deploy the controller with `lockbox.requireAAD=true`.
+
+If the controller is already running when you start, `lockbox.requireAAD=false`
+restores sync while you reseal.
 
 The controller is implemented as a `manager.Runnable` under
 [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) and
