@@ -58,6 +58,9 @@ spec:
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --metrics-secure={{ .Values.metrics.secure }}
+            {{- if .Values.metrics.certSecret }}
+            - --metrics-cert-path=/etc/lockbox/metrics-certs
+            {{- end }}
             {{- end }}
           env:
             # Downward API: the controller stores its keypair Secret in this
@@ -83,6 +86,22 @@ spec:
                   optional: true
             - name: LOCKBOX_SYNC_INTERVAL
               value: {{ .Values.lockbox.syncInterval | quote }}
+            # Namespaces the syncer refuses to write to, checked before any
+            # ciphertext is decrypted. Open by default so a new namespace needs
+            # no config change; this list is what keeps an upstream event out of
+            # the namespaces where a Secret write is a cluster takeover.
+            - name: LOCKBOX_DENIED_NAMESPACES
+              value: {{ join "," .Values.lockbox.deniedNamespaces | quote }}
+            {{- with .Values.lockbox.allowedNamespaces }}
+            # Set: switches the check to a strict allowlist.
+            - name: LOCKBOX_ALLOWED_NAMESPACES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            # Requires every ciphertext to authenticate against the AAD binding
+            # it to its namespace, name, field and timestamp. Needs a Lockbox
+            # server that seals with the same construction.
+            - name: LOCKBOX_REQUIRE_AAD
+              value: {{ .Values.lockbox.requireAAD | quote }}
           ports:
             - name: health
               containerPort: {{ .Values.healthProbe.port }}
@@ -108,3 +127,16 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if and .Values.metrics.enabled .Values.metrics.certSecret }}
+          volumeMounts:
+            - name: metrics-certs
+              mountPath: /etc/lockbox/metrics-certs
+              readOnly: true
+          {{- end }}
+      {{- if and .Values.metrics.enabled .Values.metrics.certSecret }}
+      volumes:
+        - name: metrics-certs
+          secret:
+            secretName: {{ .Values.metrics.certSecret }}
+            defaultMode: 0400
+      {{- end }}

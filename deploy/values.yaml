@@ -25,6 +25,11 @@ image:
   # this default exists only so a vanilla `helm install` resolves to an image
   # that actually exists in the registry.
   tag: "latest"
+  # Pin the exact image by digest, e.g. "sha256:abc123...". When set it wins
+  # over `tag` — a tag can be repointed in the registry after you reviewed it,
+  # a digest cannot. Strongly preferred in production; CI prints the digest of
+  # every image it pushes.
+  digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
 
@@ -62,6 +67,36 @@ lockbox:
   # where `lockbox-credentials` already exists from a prior bootstrap.
   skipBootstrapCheck: false
 
+  # --- Destination limits -------------------------------------------------
+  # The Lockbox payload names the namespace each secret is written to, so these
+  # decide how far a malformed or hostile event can reach. Both are enforced
+  # in-process before any ciphertext is decrypted, so plaintext for a rejected
+  # event never exists.
+
+  # Namespaces the syncer will never write to. Every other namespace — including
+  # ones created long after install — is allowed, so day-to-day namespace churn
+  # needs no config change. The default set is where a Secret write stops being
+  # a leak and becomes a cluster takeover: an event replacing a Secret consumed
+  # by privileged control-plane machinery executes with that machinery's
+  # authority. Nothing legitimate needs syncing into them.
+  deniedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+  # Optional strict allowlist. When non-empty ONLY these namespaces are
+  # writable, and you must extend the list whenever you add a namespace that
+  # should receive secrets. Leave empty unless you specifically want that.
+  allowedNamespaces: []
+
+  # Require every ciphertext to authenticate against the AAD binding it to its
+  # namespace, name, field key and updated_at. Without it a ciphertext is a
+  # free-floating blob: the server can re-serve the blob belonging to one secret
+  # under any other name, namespace, field or timestamp, and the controller will
+  # decrypt it there — no key required. Needs a Lockbox server that seals with
+  # the identical construction (see lockbox.AADFor); set false only to fall back
+  # to an older server.
+  requireAAD: true
+
 # Manager flags. Leader election is on by default — required for safe
 # multi-replica deployments and harmless on single-replica.
 leaderElection:
@@ -80,6 +115,12 @@ healthProbe:
 metrics:
   enabled: false
   port: 8443
+  # Secret holding the metrics server certificate (keys `tls.crt` / `tls.key`),
+  # typically issued by cert-manager. When set it is mounted read-only and
+  # passed via --metrics-cert-path, replacing the self-signed cert
+  # controller-runtime generates. Required before `serviceMonitor` can verify
+  # the endpoint it hands its bearer token to.
+  certSecret: ""
   # `false` serves plain HTTP without TokenReview/SAR — only use for scrapers
   # that can't speak TLS or that share the pod network. Default `true` matches
   # the controller's own `secureMetrics` default.
@@ -94,10 +135,22 @@ serviceMonitor:
   enabled: false
   interval: 30s
   scrapeTimeout: 10s
-  # The auto-generated metrics cert is self-signed, so the scraper has to
-  # skip verification. Replace with proper certs in production via the
-  # `--metrics-cert-*` flags.
+  # Without `metrics.certSecret` the controller serves a self-signed cert that
+  # controller-runtime generates at startup, so the scraper cannot verify it and
+  # has to skip verification — which means it presents its ServiceAccount token
+  # to whatever answers on that address. Set `metrics.certSecret`, then set this
+  # to false and fill in `caSecret` below.
   insecureSkipVerify: true
+  # Name to verify the served certificate against, e.g.
+  # "<release>-lockbox-k8s-controller.<namespace>.svc". Cheap hardening even
+  # while insecureSkipVerify is true, and required once it is false.
+  serverName: ""
+  # CA bundle used to verify the metrics cert. Point at the issuing CA of
+  # `metrics.certSecret` — with cert-manager this is usually the same Secret.
+  #   caSecret:
+  #     name: lockbox-metrics-cert
+  #     key: ca.crt
+  caSecret: {}
   labels: {}
 
 # Pod-level resources. The defaults bump the kubebuilder scaffold's 128Mi

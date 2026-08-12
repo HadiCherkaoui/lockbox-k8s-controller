@@ -21,4 +21,13 @@ spec:
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       tlsConfig:
         insecureSkipVerify: {{ .Values.serviceMonitor.insecureSkipVerify }}
+        {{- with .Values.serviceMonitor.serverName }}
+        serverName: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.serviceMonitor.caSecret }}
+        ca:
+          secret:
+            name: {{ .name }}
+            key: {{ .key }}
+        {{- end }}
 {{- end -}}

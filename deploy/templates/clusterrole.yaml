@@ -1,7 +1,13 @@
 {{- if .Values.rbac.create -}}
 {{- /* Cluster-scoped CRUD on Secrets: the syncer writes into whatever
-       namespaces the Lockbox events name. There is no namespace allowlist
-       in the controller — every event is honoured. */ -}}
+       namespaces the Lockbox events name, so that a namespace created after
+       install needs no RBAC change.
+
+       The controller — not RBAC — is what bounds this. Every event is checked
+       against lockbox.deniedNamespaces before anything is decrypted, and
+       lockbox.allowedNamespaces turns that into a strict allowlist when set.
+       Narrow this ClusterRole to per-namespace Roles only if you also pin
+       lockbox.allowedNamespaces to the same set. */ -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

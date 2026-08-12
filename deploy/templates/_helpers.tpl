@@ -45,10 +45,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{/* Container image reference: defaults image.tag to .Chart.AppVersion. */}}
+{{/* Container image reference. A digest, when set, wins over any tag: it is the
+     only form that pins what actually runs, since a tag can be repointed in the
+     registry after the fact. Otherwise falls back to image.tag, defaulting to
+     .Chart.AppVersion. */}}
 {{- define "lockbox.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repo .Values.image.digest -}}
+{{- else -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repo $tag -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Name of the Secret carrying LOCKBOX_ENDPOINT + LOCKBOX_API_KEY.
