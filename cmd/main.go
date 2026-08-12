@@ -21,6 +21,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,10 +30,12 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -161,8 +165,19 @@ func main() {
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "67035bfd.cherkaoui.ch",
+		// Read Secrets straight from the API server instead of through the
+		// manager's cache. A cached client would start a cluster-wide Secret
+		// informer and hold every Secret in the cluster in this process's heap
+		// — far more material than the controller ever needs, and all of it
+		// readable by anything that gets code execution here. At homelab scale
+		// (a handful of secrets, 60s interval) the direct reads are free.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Secret{}},
+			},
+		},
+		LeaderElection:   enableLeaderElection,
+		LeaderElectionID: "67035bfd.cherkaoui.ch",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -198,6 +213,13 @@ func main() {
 
 	controllerNS := controllerNamespace()
 
+	policy := lbxsyncer.Policy{
+		AllowedNamespaces:   envSet("LOCKBOX_ALLOWED_NAMESPACES", nil),
+		DeniedNamespaces:    envSet("LOCKBOX_DENIED_NAMESPACES", lbxsyncer.DefaultDeniedNamespaces),
+		ControllerNamespace: controllerNS,
+		RequireAAD:          envBool("LOCKBOX_REQUIRE_AAD", true),
+	}
+
 	lbxAuth := lockboxpkg.NewAuth(lockboxEndpoint, lockboxAPIKey)
 	lbxClient := lockboxpkg.NewClient(lockboxEndpoint, lbxAuth)
 	syncer := &lbxsyncer.Syncer{
@@ -206,12 +228,22 @@ func main() {
 		Auth:          lbxAuth,
 		Namespace:     controllerNS,
 		Interval:      syncInterval,
+		Policy:        policy,
 	}
 	if err = mgr.Add(syncer); err != nil {
 		setupLog.Error(err, "failed to register lockbox syncer")
 		os.Exit(1)
 	}
-	setupLog.Info("lockbox syncer registered", "interval", syncInterval, "namespace", controllerNS)
+	setupLog.Info("lockbox syncer registered",
+		"interval", syncInterval,
+		"namespace", controllerNS,
+		"allowedNamespaces", sortedKeys(policy.AllowedNamespaces),
+		"deniedNamespaces", sortedKeys(policy.DeniedNamespaces),
+		"requireAAD", policy.RequireAAD)
+	if !policy.RequireAAD {
+		setupLog.Info("WARNING: LOCKBOX_REQUIRE_AAD=false — ciphertexts are accepted without a binding " +
+			"to their destination, so the server can relocate any secret to any namespace, field or timestamp")
+	}
 	// --- end lockbox sync setup ---
 
 	// +kubebuilder:scaffold:builder
@@ -238,6 +270,51 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// envSet parses a comma-separated env var into a set, falling back to def when
+// the variable is unset. An explicitly empty value yields an empty set, which
+// is how an operator clears the default denylist.
+func envSet(key string, def []string) map[string]struct{} {
+	raw, ok := os.LookupEnv(key)
+	items := def
+	if ok {
+		items = strings.Split(raw, ",")
+	}
+	set := make(map[string]struct{}, len(items))
+	for _, it := range items {
+		if v := strings.TrimSpace(it); v != "" {
+			set[v] = struct{}{}
+		}
+	}
+	return set
+}
+
+// envBool parses a boolean env var, falling back to def when unset or
+// unparseable.
+func envBool(key string, def bool) bool {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		setupLog.Info("ignoring unparseable boolean env var, using default",
+			"key", key, "value", raw, "default", def)
+		return def
+	}
+	return v
+}
+
+// sortedKeys returns the set's keys in a stable order, so startup logs are
+// diffable across restarts.
+func sortedKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func mustEnv(key string) string {

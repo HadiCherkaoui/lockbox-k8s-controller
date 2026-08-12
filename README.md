@@ -20,9 +20,16 @@ the matching Kubernetes Secret in the namespace dictated by Lockbox:
 
 - **CREATE** — Secret didn't exist; create it with `lockbox.io/managed=true` and
   the `secret_type` the server sent (e.g. `Opaque`, `kubernetes.io/dockerconfigjson`).
-- **UPDATE** — Secret already managed; rewrite its `data`. The k8s Secret type is
+- **UPDATE** — Secret already managed; rewrite its `data`. Data is replaced, not
+  merged — Lockbox is the source of truth for the whole Secret, so a field removed
+  upstream disappears here too. An upsert carrying no fields is refused as a
+  protocol error rather than emptying the Secret. The k8s Secret type is
   immutable, so the type field is only set on creation and left untouched on updates.
-- **ADOPT** — Secret pre-existed and was unmanaged; mark it managed, leave data untouched.
+- **ADOPT** — Secret pre-existed and was unmanaged. Requires the operator to
+  offer it first by applying `lockbox.io/adopt=true` in-cluster; without that the
+  event is refused. Adoption marks the Secret managed and leaves data untouched,
+  and adopted Secrets are never entered into the self-heal cache (their data
+  belongs to whoever created them). See [Destination limits](#destination-limits).
 - **DELETE** — Secret managed and removed upstream; delete it.
 - **SELF-HEAL** — If a managed Secret is externally deleted (Flux prune, `kubectl delete`,
   etc.) the controller detects the gap on the next poll tick and recreates the Secret
@@ -32,6 +39,33 @@ the matching Kubernetes Secret in the namespace dictated by Lockbox:
 The keypair is generated on first start, registered with Lockbox using a
 bootstrap API key, and persisted in the `lockbox-credentials` Secret in the
 controller's own namespace. Subsequent restarts work without the bootstrap key.
+
+### Destination limits
+
+The Lockbox payload names the namespace, secret name and field key each value is
+written to, so those inputs decide how far an event can reach. Two limits bound
+it, both enforced before any ciphertext is decrypted, so plaintext for a rejected
+event never exists in the process:
+
+- **Namespace denylist** (`lockbox.deniedNamespaces`, default `kube-system`,
+  `kube-public`, `kube-node-lease`). Every other namespace is writable, including
+  ones created long after install, so namespace churn needs no config change. The
+  default set is where a Secret write stops being a leak and becomes a cluster
+  takeover. Set `lockbox.allowedNamespaces` to switch to a strict allowlist.
+  Events naming the controller's own `lockbox-credentials` Secret are always
+  refused.
+- **AAD binding** (`lockbox.requireAAD`, default on). Each field is sealed
+  against `domain ‖ namespace ‖ name ‖ field`, length-prefixed. Without it a
+  ciphertext is a free-floating blob: the server can re-serve the value belonging
+  to one secret under any other namespace, name or field and the controller will
+  decrypt it there, with no key required. Requires a Lockbox server that seals
+  with the identical construction (`lockbox.AADFor`); set false to fall back to
+  an older server.
+
+AAD binds *location*, not *freshness* — `updated_at` cannot participate, because
+the sealer never sees it and a partial update re-stamps it while leaving
+untouched fields sealed under the old value. Replay of an old blob at the same
+coordinates is therefore not prevented here and needs a separate mechanism.
 
 The controller is implemented as a `manager.Runnable` under
 [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) and
@@ -102,6 +136,11 @@ Key values — see [`deploy/values.yaml`](deploy/values.yaml) for the full list:
 | `lockbox.syncInterval` | `60s` | Poll interval. |
 | `lockbox.existingSecret` | `""` | Bring-your-own Secret with `endpoint` + optional `api-key`. |
 | `lockbox.skipBootstrapCheck` | `false` | Bypass chart-time guard requiring `apiKey` or `existingSecret`. |
+| `lockbox.deniedNamespaces` | `kube-system`, `kube-public`, `kube-node-lease` | Namespaces the syncer refuses to write to. |
+| `lockbox.allowedNamespaces` | `[]` | When non-empty, a strict allowlist instead of the denylist. |
+| `lockbox.requireAAD` | `true` | Require each ciphertext to authenticate against its destination. |
+| `image.digest` | `""` | Pin the image by digest; wins over `tag`. Preferred in production. |
+| `metrics.certSecret` | `""` | Secret with `tls.crt`/`tls.key` for the metrics server, replacing the self-signed cert. |
 | `replicaCount` | `1` | Leader election picks one active syncer. |
 | `metrics.enabled` | `false` | Enables `:8443` HTTPS metrics with auth. |
 | `serviceMonitor.enabled` | `false` | Renders a `prometheus-operator` ServiceMonitor (requires `metrics.enabled`). |

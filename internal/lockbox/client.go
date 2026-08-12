@@ -40,7 +40,7 @@ func NewClient(endpoint string, auth *Auth) *Client {
 	return &Client{
 		endpoint: endpoint,
 		auth:     auth,
-		http:     &http.Client{Timeout: httpTimeout},
+		http:     newHTTPClient(),
 	}
 }
 

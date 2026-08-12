@@ -43,6 +43,9 @@ type Syncer struct {
 	K8sClient     client.Client
 	Seed          []byte
 	Interval      time.Duration
+	// Policy carries the operator-set limits (namespace allowlist, AAD
+	// enforcement) applied to every event before it is acted on.
+	Policy Policy
 	// Auth and Namespace are used to initialize the keypair on first start.
 	// If Auth is nil, Seed must be pre-populated.
 	Auth      AuthIface
@@ -111,17 +114,32 @@ func (s *Syncer) syncOnce(ctx context.Context, logger logr.Logger) {
 	failed, skipped := 0, 0
 	for _, secret := range secrets {
 		key := fmt.Sprintf("%s/%s@%d", secret.Namespace, secret.Name, secret.UpdatedAt)
+		cacheKey := secret.Namespace + "/" + secret.Name
 		if s.failedAttempts[key] >= maxReconcileAttempts {
 			// Poison event: dropped from this sync stream so the cursor can
 			// advance. Operator must fix the upstream event in Lockbox.
-			logger.Error(nil, "skipping permanently-failing event after max attempts",
-				"name", secret.Name, "namespace", secret.Namespace,
-				"updatedAt", secret.UpdatedAt, "attempts", s.failedAttempts[key])
+			//
+			// Evict the cache entry first. A tombstone is never re-delivered,
+			// so skipping a delete without evicting would leave self-heal
+			// re-creating a secret that was revoked upstream — every tick,
+			// forever, surviving both upstream deletion and kubectl delete.
+			if secret.DeletedAt != nil {
+				delete(s.knownSecrets, cacheKey)
+				logger.Error(nil, "skipping permanently-failing DELETE after max attempts — "+
+					"self-heal disabled for this secret; it may still exist in-cluster and needs manual removal",
+					"name", secret.Name, "namespace", secret.Namespace,
+					"updatedAt", secret.UpdatedAt, "attempts", s.failedAttempts[key])
+			} else {
+				logger.Error(nil, "skipping permanently-failing event after max attempts",
+					"name", secret.Name, "namespace", secret.Namespace,
+					"updatedAt", secret.UpdatedAt, "attempts", s.failedAttempts[key])
+			}
 			delete(s.failedAttempts, key)
 			skipped++
 			continue
 		}
-		if err := reconcileSecret(ctx, logger, s.K8sClient, s.Seed, secret); err != nil {
+		result, err := reconcileSecret(ctx, logger, s.K8sClient, s.Seed, s.Policy, secret)
+		if err != nil {
 			s.failedAttempts[key]++
 			failed++
 			logger.Error(err, "reconcile failed",
@@ -130,12 +148,17 @@ func (s *Syncer) syncOnce(ctx context.Context, logger logr.Logger) {
 			continue
 		}
 		delete(s.failedAttempts, key)
-		// Update the self-heal cache: track live secrets, evict deleted ones.
-		cacheKey := secret.Namespace + "/" + secret.Name
-		if secret.DeletedAt != nil {
+		// Update the self-heal cache: track secrets this controller owns the
+		// data for, evict deleted ones. Adopted Secrets are deliberately not
+		// cached — their data belongs to whoever created them, and replaying a
+		// stored event over one would overwrite data we never possessed.
+		switch {
+		case result == outcomeDeleted:
 			delete(s.knownSecrets, cacheKey)
-		} else {
+		case result.cacheable():
 			s.knownSecrets[cacheKey] = secret
+		default:
+			delete(s.knownSecrets, cacheKey)
 		}
 	}
 	// Advance the cursor only when every remaining event reconciled. Events
@@ -185,7 +208,7 @@ func (s *Syncer) healDeletedSecrets(ctx context.Context, logger logr.Logger) {
 		// Secret is missing from the cluster — recreate it.
 		logger.Info("self-heal: recreating externally-deleted managed secret",
 			"namespace", meta.Namespace, "name", meta.Name)
-		if err := reconcileSecret(ctx, logger, s.K8sClient, s.Seed, meta); err != nil {
+		if _, err := reconcileSecret(ctx, logger, s.K8sClient, s.Seed, s.Policy, meta); err != nil {
 			logger.Error(err, "self-heal: failed to recreate secret",
 				"namespace", meta.Namespace, "name", meta.Name)
 			continue

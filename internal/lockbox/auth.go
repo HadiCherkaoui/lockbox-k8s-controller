@@ -47,7 +47,23 @@ func NewAuth(endpoint, apiKey string) *Auth {
 	return &Auth{
 		endpoint: endpoint,
 		apiKey:   apiKey,
-		http:     &http.Client{Timeout: httpTimeout},
+		http:     newHTTPClient(),
+	}
+}
+
+// newHTTPClient builds the HTTP client used for every Lockbox call.
+//
+// Redirects are refused outright: the protocol has no legitimate use for them,
+// and Go replays non-standard headers across hosts on redirect. X-API-KEY is
+// not in net/http's sensitive-header set, so a 3xx would hand the bootstrap
+// credential to the redirect target. Authorization is stripped only when the
+// hostname changes — never on an https->http downgrade to the same host.
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: httpTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 }
 
