@@ -49,18 +49,38 @@ test:
     - if: $CI_COMMIT_BRANCH == 'develop'
 
 
+# Reachability-based CVE scan: reports only advisories whose vulnerable symbols
+# are actually called from this module, so it stays quiet enough to gate on.
+vulncheck:
+  stage: test
+  image: golang:${GO_VERSION}
+  script:
+    - go install golang.org/x/vuln/cmd/govulncheck@latest
+    - govulncheck ./...
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == 'main'
+    - if: $CI_COMMIT_BRANCH == 'develop'
+
 # -------------------------
 # Build and push image
 # -------------------------
 .build_docker_common:
   image: docker:28.0.4
   services:
+    # No `command:` override — dind's default entrypoint generates a CA and
+    # serves the API over mutual TLS on 2376. Forcing --tls=false on
+    # 0.0.0.0:2375 published an unauthenticated root-equivalent Docker API for
+    # the job's lifetime; on a Kubernetes-executor runner that socket is
+    # reachable by anything that can schedule a pod, which is enough to inject
+    # a layer between build and push.
     - name: docker:28.0.4-dind
       alias: docker
-      command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false"]
   variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
     DOCKER_BUILDKIT: "1"
   before_script:
     - docker info
@@ -71,8 +91,15 @@ build:image:
   needs: ["test"]
   extends: .build_docker_common
   script:
-    - docker build -t "$CI_REGISTRY_IMAGE:$[[ inputs.image_tag ]]" .
+    - set -eu
+    # Always publish an immutable $CI_COMMIT_SHA tag alongside the floating one,
+    # so deployments have something to pin that cannot be repointed later.
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" -t "$CI_REGISTRY_IMAGE:$[[ inputs.image_tag ]]" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
     - docker push "$CI_REGISTRY_IMAGE:$[[ inputs.image_tag ]]"
+    # Surface the digest for `image.digest` in the Helm values.
+    - echo "Pin this in deploy/values.yaml as image.digest:"
+    - docker inspect --format='{{index .RepoDigests 0}}' "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       changes:
@@ -81,7 +108,10 @@ build:image:
         - cmd/**/*
         - internal/**/*
         - Dockerfile
-    - if: $CI_PIPELINE_SOURCE == "web"
+    # Manual web-triggered builds are restricted to main. Without the branch
+    # condition this rule let any Developer publish the tag production consumes
+    # from an arbitrary unmerged branch — no MR, no review.
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "main"
       when: manual
 
 # -------------------------
